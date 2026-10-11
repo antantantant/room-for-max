@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apartment Room for Max</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #dfe6ec; font-family: system-ui, sans-serif; }
+  #label { position: fixed; left: 16px; top: 12px; color: #333; pointer-events: none; }
+  #label h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  #label p { margin: 2px 0 0; font-size: 13px; opacity: .7; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="label"><h1>Apartment Room for Max</h1><p>Drag to rotate · scroll to zoom</p></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const W = 5, D = 4, H = 2.6; // room size in metres
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdfe6ec);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(-4.2, 4, 6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0.2, 0.8, -0.2);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI / 2 - 0.05;
+controls.minDistance = 2;
+controls.maxDistance = 14;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xb0a090, 1.6));
+const sun = new THREE.DirectionalLight(0xfff2dd, 1.8);
+sun.position.set(-3, 6, 4);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -4, right: 4, top: 4, bottom: -4 });
+scene.add(sun);
+
+// ---------- helpers ----------
+const mat = (color, map) => new THREE.MeshStandardMaterial({ color, map, roughness: 0.85 });
+
+function add(geo, material, x, y, z, parent = scene) {
+  const m = new THREE.Mesh(geo, material);
+  m.position.set(x, y, z);
+  m.castShadow = m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+const box = (w, h, d, material, x, y, z, parent) =>
+  add(new THREE.BoxGeometry(w, h, d), material, x, y, z, parent);
+
+function canvasTexture(size, draw, repeatX = 1, repeatY = 1) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  draw(c.getContext('2d'), size);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repeatX, repeatY);
+  return t;
+}
+
+// ---------- textures ----------
+const frogTex = canvasTexture(256, (g, s) => {
+  g.fillStyle = '#eef5e4'; g.fillRect(0, 0, s, s);
+  g.strokeStyle = '#c9d8bb'; g.lineWidth = 2;
+  for (let i = -s; i <= s * 2; i += s / 2) {
+    g.beginPath(); g.moveTo(i, 0); g.lineTo(i + s, s); g.stroke();
+    g.beginPath(); g.moveTo(i, 0); g.lineTo(i - s, s); g.stroke();
+  }
+  const frog = (x, y) => {
+    g.fillStyle = '#6fb04a';
+    g.beginPath(); g.ellipse(x, y, 30, 20, 0, 0, Math.PI * 2); g.fill();
+    for (const dx of [-16, 16]) {
+      g.fillStyle = '#6fb04a'; g.beginPath(); g.arc(x + dx, y - 18, 11, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#fff';    g.beginPath(); g.arc(x + dx, y - 19, 6, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#222';    g.beginPath(); g.arc(x + dx, y - 19, 3, 0, Math.PI * 2); g.fill();
+    }
+    g.strokeStyle = '#2f5a1c'; g.lineWidth = 2.5;
+    g.beginPath(); g.arc(x, y - 2, 14, 0.15 * Math.PI, 0.85 * Math.PI); g.stroke();
+  };
+  frog(64, 74); frog(192, 202);
+}, 3, 4);
+
+const checkTex = (a, b, n) => canvasTexture(128, (g, s) => {
+  const q = s / 4;
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+    g.fillStyle = (i + j) % 2 ? a : b; g.fillRect(i * q, j * q, q, q);
+  }
+}, n, n);
+
+const posterTex = canvasTexture(512, (g, s) => {
+  g.fillStyle = '#d7141a'; g.fillRect(0, 0, s, s);
+  g.strokeStyle = '#fff'; g.lineWidth = 10; g.strokeRect(18, 18, s - 36, s - 36);
+  g.fillStyle = '#fff'; g.textAlign = 'center';
+  g.font = 'bold 250px Georgia, serif'; g.fillText('14', s / 2, 300);
+  g.font = 'bold 76px Georgia, serif';  g.fillText('ARSENAL', s / 2, 420);
+});
+
+const flowerTex = canvasTexture(512, (g, s) => {
+  g.fillStyle = '#f6efe0'; g.fillRect(0, 0, s, s);
+  g.strokeStyle = '#4c8a3a'; g.lineWidth = 7;
+  const stems = [[150, 170], [215, 110], [270, 80], [320, 130], [385, 185]];
+  for (const [x, y] of stems) { g.beginPath(); g.moveTo(256, 340); g.quadraticCurveTo(256, y + 60, x, y); g.stroke(); }
+  // long feathery leaf
+  g.lineWidth = 4;
+  for (let i = 0; i < 12; i++) {
+    const x = 300 + i * 13, y = 290 - i * 20;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + 34, y - 6); g.moveTo(x, y); g.lineTo(x - 6, y - 34); g.stroke();
+  }
+  const colors = ['#e8647c', '#f2a23c', '#e8647c', '#b06ad0', '#f2a23c'];
+  stems.forEach(([x, y], i) => {
+    g.fillStyle = colors[i];
+    for (let k = 0; k < 6; k++) {
+      const a = k * Math.PI / 3;
+      g.beginPath(); g.arc(x + Math.cos(a) * 22, y + Math.sin(a) * 22, 19, 0, Math.PI * 2); g.fill();
+    }
+    g.fillStyle = '#ffe27a'; g.beginPath(); g.arc(x, y, 14, 0, Math.PI * 2); g.fill();
+  });
+  // striped vase
+  g.save();
+  g.beginPath(); g.moveTo(200, 320); g.quadraticCurveTo(150, 410, 205, 480); g.lineTo(307, 480);
+  g.quadraticCurveTo(362, 410, 312, 320); g.closePath(); g.clip();
+  for (let y = 320, i = 0; y < 480; y += 16, i++) { g.fillStyle = i % 2 ? '#3d6fb5' : '#ffffff'; g.fillRect(140, y, 240, 16); }
+  g.restore();
+});
+
+// ---------- room shell ----------
+const floor = add(new THREE.PlaneGeometry(W, D), mat(0xc9a77c), 0, 0, 0);
+floor.rotation.x = -Math.PI / 2;
+floor.castShadow = false;
+// Walls render only their inner faces, so the near walls disappear as you orbit.
+const wallMat = new THREE.MeshStandardMaterial({ color: 0xf3ede2, side: THREE.BackSide, roughness: 1 });
+const hidden = new THREE.MeshBasicMaterial({ visible: false });
+const shell = new THREE.Mesh(new THREE.BoxGeometry(W, H, D), [wallMat, wallMat, hidden, hidden, wallMat, wallMat]);
+shell.position.y = H / 2;
+scene.add(shell);
+
+// ---------- windows (back wall) ----------
+const white = mat(0xffffff);
+function windowAt(x) {
+  const g = new THREE.Group();
+  g.position.set(x, 1.6, -D / 2 + 0.01);
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 1.1), new THREE.MeshBasicMaterial({ color: 0xbfe3f7 }));
+  g.add(glass);
+  box(1.1, 0.06, 0.05, white, 0, 0.55, 0, g);
+  box(1.1, 0.06, 0.05, white, 0, -0.55, 0, g);
+  box(0.06, 1.16, 0.05, white, -0.52, 0, 0, g);
+  box(0.06, 1.16, 0.05, white, 0.52, 0, 0, g);
+  box(0.04, 1.1, 0.04, white, 0, 0, 0, g);
+  box(1.0, 0.04, 0.04, white, 0, 0, 0, g);
+  scene.add(g);
+}
+[-1.4, 0.15, 1.7].forEach(windowAt);
+
+// ---------- door (front wall, by the sofa) ----------
+const door = new THREE.Group();
+door.position.set(-1.9, 1.0, D / 2 - 0.01);
+door.rotation.y = Math.PI;
+door.add(new THREE.Mesh(new THREE.PlaneGeometry(0.85, 2.0), mat(0x9a6b43)));
+add(new THREE.CircleGeometry(0.04, 20), mat(0xd9b64a), 0.32, 0, 0.005, door);
+scene.add(door);
+
+// ---------- bed (back-right corner) ----------
+const wood = mat(0x8a5a36);
+const bedX = 1.7, bedZ = -0.95;
+box(1.5, 0.25, 2.0, wood, bedX, 0.225, bedZ);                       // frame
+for (const dx of [-0.68, 0.68]) for (const dz of [-0.93, 0.93])
+  box(0.08, 0.1, 0.08, wood, bedX + dx, 0.05, bedZ + dz);           // feet
+box(1.56, 1.05, 0.08, wood, bedX, 0.525, -1.95);                    // headboard
+box(1.44, 0.2, 1.94, white, bedX, 0.45, bedZ);                      // mattress
+box(1.56, 0.26, 1.5, mat(0xffffff, frogTex), bedX, 0.45, bedZ + 0.26); // frog quilt
+const pillow = add(new THREE.SphereGeometry(0.3, 24, 16), mat(0xffffff, checkTex('#3d6fb5', '#f4f4f4', 3)), bedX + 0.25, 0.62, -1.65);
+pillow.scale.set(1.6, 0.4, 0.8);
+
+// stuffed bear next to the pillow
+const fur = mat(0xb07a45);
+const bear = new THREE.Group();
+bear.position.set(bedX - 0.45, 0.58, -1.6);
+add(new THREE.SphereGeometry(0.13, 16, 12), fur, 0, 0.1, 0, bear);
+add(new THREE.SphereGeometry(0.1, 16, 12), fur, 0, 0.29, 0.02, bear);
+for (const dx of [-0.08, 0.08]) {
+  add(new THREE.SphereGeometry(0.04), fur, dx, 0.38, 0, bear);
+  add(new THREE.SphereGeometry(0.012), mat(0x111111), dx / 2, 0.31, 0.11, bear);
+  add(new THREE.SphereGeometry(0.05), fur, dx * 1.3, 0.02, 0.1, bear);
+}
+add(new THREE.SphereGeometry(0.035), mat(0xe6cfa6), 0, 0.27, 0.1, bear);
+scene.add(bear);
+
+// ---------- wall art (right wall, above the bed) ----------
+function framed(tex, w, h, z) {
+  const g = new THREE.Group();
+  g.position.set(W / 2 - 0.03, 1.65, z);
+  g.rotation.y = -Math.PI / 2;
+  box(w + 0.08, h + 0.08, 0.03, mat(0x3a2a1c), 0, 0, 0, g);
+  const p = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshStandardMaterial({ map: tex }));
+  p.position.z = 0.02;
+  g.add(p);
+  scene.add(g);
+}
+framed(flowerTex, 0.7, 0.7, -1.25);
+framed(posterTex, 0.6, 0.6, -0.3);
+
+// ---------- nightstand with drawers, books and lamp ----------
+const ns = new THREE.Group();
+ns.position.set(0.62, 0, -1.72);
+box(0.5, 0.6, 0.45, wood, 0, 0.3, 0, ns);
+for (const y of [0.17, 0.43]) {
+  box(0.42, 0.2, 0.02, mat(0xa87447), 0, y, 0.23, ns);
+  box(0.14, 0.03, 0.03, mat(0x333333), 0, y, 0.25, ns);
+}
+box(0.2, 0.04, 0.28, mat(0xc0392b), -0.12, 0.62, 0.05, ns);
+box(0.18, 0.04, 0.26, mat(0x2e6fb0), -0.12, 0.66, 0.05, ns);
+scene.add(ns);
+
+function lamp(x, y, z) {
+  const g = new THREE.Group();
+  g.position.set(x, y, z);
+  add(new THREE.CylinderGeometry(0.07, 0.08, 0.03, 20), mat(0x444444), 0, 0.015, 0, g);
+  add(new THREE.CylinderGeometry(0.012, 0.012, 0.25, 8), mat(0x444444), 0, 0.15, 0, g);
+  add(new THREE.CylinderGeometry(0.07, 0.12, 0.16, 20, 1, true),
+      new THREE.MeshStandardMaterial({ color: 0xfff1c4, emissive: 0xffd98a, emissiveIntensity: 0.6, side: THREE.DoubleSide }), 0, 0.33, 0, g);
+  scene.add(g);
+}
+lamp(0.72, 0.6, -1.78);
+
+// ---------- stand-up desk and chair (left wall) ----------
+const deskX = -2.1, deskZ = -1.0;
+box(0.7, 0.05, 1.4, mat(0xe2c89f), deskX, 1.05, deskZ);
+const metal = mat(0x555555);
+for (const dz of [-0.6, 0.6]) {
+  box(0.06, 1.03, 0.06, metal, deskX, 0.515, deskZ + dz);
+  box(0.6, 0.04, 0.08, metal, deskX, 0.02, deskZ + dz);
+}
+lamp(deskX - 0.1, 1.075, deskZ - 0.5);
+box(0.3, 0.02, 0.22, mat(0xf5f5f5), deskX + 0.05, 1.085, deskZ + 0.1).rotation.y = 0.3; // paper
+
+const chair = new THREE.Group();
+chair.position.set(-1.35, 0, -0.9);
+chair.rotation.y = 0.25;
+const chairMat = mat(0x6a4a30);
+box(0.42, 0.05, 0.42, chairMat, 0, 0.45, 0, chair);
+box(0.05, 0.5, 0.42, chairMat, 0.19, 0.72, 0, chair);
+for (const dx of [-0.18, 0.18]) for (const dz of [-0.18, 0.18])
+  box(0.04, 0.45, 0.04, chairMat, dx, 0.225, dz, chair);
+scene.add(chair);
+
+// ---------- cozy sofa (beanbag), plant, shoes ----------
+const sofa = add(new THREE.SphereGeometry(0.7, 32, 24), mat(0xffffff, checkTex('#d9925c', '#e6a873', 10)), -1.25, 0.36, 0.75);
+sofa.scale.set(1, 0.55, 1);
+const back = add(new THREE.SphereGeometry(0.5, 32, 24), sofa.material, -1.6, 0.62, 0.95);
+back.scale.set(0.8, 0.9, 1.1);
+
+function plant(x, z, s = 1) {
+  const g = new THREE.Group();
+  g.position.set(x, 0, z);
+  g.scale.setScalar(s);
+  add(new THREE.CylinderGeometry(0.14, 0.1, 0.24, 20), mat(0xb5613c), 0, 0.12, 0, g);
+  const leaf = mat(0x3f8f45);
+  for (let i = 0; i < 7; i++) {
+    const a = i * Math.PI * 2 / 7;
+    const l = add(new THREE.SphereGeometry(0.1, 12, 8), leaf, Math.cos(a) * 0.1, 0.42, Math.sin(a) * 0.1, g);
+    l.scale.set(0.5, 2.2, 0.5);
+    l.rotation.set(Math.sin(a) * 0.5, 0, -Math.cos(a) * 0.5);
+  }
+  scene.add(g);
+}
+plant(-2.2, 0.0);
+plant(-0.6, -1.75, 0.8);
+
+const shoeMat = mat(0x2f2f38);
+for (const [x, z, r] of [[0.1, 1.2, 0.2], [0.32, 1.25, -0.1]]) {
+  const s = new THREE.Group();
+  s.position.set(x, 0, z);
+  s.rotation.y = r;
+  box(0.1, 0.05, 0.27, white, 0, 0.025, 0, s);
+  box(0.1, 0.07, 0.25, shoeMat, 0, 0.08, 0, s);
+  box(0.1, 0.07, 0.1, shoeMat, 0, 0.14, -0.07, s);
+  scene.add(s);
+}
+
+// ---------- render loop ----------
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>
