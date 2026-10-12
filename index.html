@@ -29,8 +29,9 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createPipeline } from './src/pipeline.js';
-import { buildScene, views } from './src/scene.js';
+// Bump ?v= whenever src/ changes: it stops a browser pairing this page with an older cached module.
+import { createPipeline } from './src/pipeline.js?v=5';
+import { buildScene, views } from './src/scene.js?v=5';
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 100);
