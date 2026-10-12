@@ -4,6 +4,8 @@ A 3D model of a Tuscan-styled bedroom, built from a pencil sketch with [three.js
 
 The sun follows the path it takes at Tuscany's latitude (about 0.18° a minute upwards, drifting south). Real time is slow, so it plays at 20× by default; the buttons at the bottom left switch between real time, 20× and 60×, pause, restart, and mute.
 
+The room sits high in a building on the cliff edge of a hilltop town. The east windows look out over the valley far below, under drifting clouds; the south window looks across a lane at the neighbours' roofs and the bell tower.
+
 Furniture positions are measured off the floor plan in the sketch and scaled by assuming the bed is 2.0 m long, which makes the room about 4.2 m × 2.6 m. The wall with two windows faces east. Colours and materials are a Tuscan interpretation, since the sketch is in pencil.
 
 ## Running it

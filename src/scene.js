@@ -428,46 +428,105 @@ export function buildScene(scene, renderer) {
     });
   });
 
-  // The land outside: a full 360-degree ring of hills, cypresses, farmhouses and
-  // streaks of cloud, on a clear background. The sky itself, and the light on
-  // all of this, are computed per frame in the sky shader.
-  const landTex = tex(8192, 1024, (g, w, h) => {
-    for (let i = 0; i < 70; i++) {                        // clouds: white, the shader colours them
-      const x = rand() * w, y = 110 + rand() * 330, cw = 220 + rand() * 620, ch = 9 + rand() * 20;
-      g.fillStyle = `rgba(255,255,255,${0.25 + rand() * 0.35})`;
-      for (const ox of [-w, 0, w]) { g.beginPath(); g.ellipse(x + ox, y, cw / 2, ch, 0, 0, Math.PI * 2); g.fill(); }
-    }
-    // the farthest ridge is kept low, so the sun clears it within a few minutes of rising
-    const layers = [['#5a5f8c', 0.553, 6, 3, 7], ['#4c5e6c', 0.58, 22, 4, 9], ['#4f5f48', 0.65, 34, 5, 11], ['#585436', 0.73, 30, 4, 13], ['#2f3d20', 0.82, 34, 6, 15]];
-    layers.forEach(([color, base, amp, k1, k2], n) => {
-      const p1 = rand() * 6, p2 = rand() * 6;   // whole numbers of waves, so the panorama closes on itself
-      const ridge = x => h * base + amp * Math.sin(x / w * Math.PI * 2 * k1 + p1) + amp * 0.5 * Math.sin(x / w * Math.PI * 2 * k2 + p2);
+  // The land outside. The room is high in a building on the cliff edge of a
+  // hilltop town, so the country lies far below: a ring of distant ridges on the
+  // horizon, then the valley floor falling away beneath the window, a patchwork
+  // of fields, vineyards, white roads and farmhouses. Painted on a clear
+  // background; the sky, the clouds and the light on the land come from the shader.
+  const LAND = { w: 8192, h: 1280, horizon: 466 };        // the horizon sits 14 m up a 22 m tall backdrop
+  const landTex = tex(LAND.w, LAND.h, (g, w, h) => {
+    const H0 = LAND.horizon, wrap = draw => { for (const ox of [-w, 0, w]) draw(ox); };
+    // two faint ridges right on the horizon, low enough for the sun to clear within minutes
+    [['#8d8fb0', 0, 7, 3, 7], ['#7f879c', 14, 12, 4, 9]].forEach(([color, drop, amp, k1, k2]) => {
+      const p1 = rand() * 6, p2 = rand() * 6;
       g.fillStyle = color;
       g.beginPath(); g.moveTo(0, h);
-      for (let x = 0; x <= w; x += 8) g.lineTo(x, ridge(x));
+      for (let x = 0; x <= w; x += 8) g.lineTo(x, H0 + drop + amp * Math.sin(x / w * Math.PI * 2 * k1 + p1) + amp * 0.5 * Math.sin(x / w * Math.PI * 2 * k2 + p2));
       g.lineTo(w, h); g.fill();
-      if (n >= 2) for (let i = 0; i < 60; i++) {         // cypresses along the nearer ridges
-        const x = rand() * w, th = (18 + rand() * 26) * (0.6 + n * 0.35);
-        g.fillStyle = n < 3 ? '#2f4340' : '#1b2a1e';
-        g.beginPath(); g.ellipse(x, ridge(x) - th * 0.45, th * 0.14, th * 0.55, 0, 0, Math.PI * 2); g.fill();
-      }
-      if (n === 2) for (let i = 0; i < 7; i++) {         // farmhouses
-        const fx = (i + 0.35 + rand() * 0.3) * w / 7, y = ridge(fx);
-        g.fillStyle = '#8f7a66'; g.fillRect(fx - 46, y - 50, 92, 52);
-        g.fillStyle = '#6a3a2c'; g.beginPath(); g.moveTo(fx - 56, y - 50); g.lineTo(fx, y - 80); g.lineTo(fx + 56, y - 50); g.fill();
-        g.fillStyle = '#3a2c22'; for (const dx of [-26, 14]) g.fillRect(fx + dx, y - 36, 12, 16);
-      }
-      if (n === 4) {                                      // vineyard rows in the foreground
-        g.strokeStyle = 'rgba(30,46,20,0.55)'; g.lineWidth = 5;
-        for (let x = -200; x < w + 200; x += 46) { g.beginPath(); g.moveTo(x, h); g.lineTo(x + 90, h * 0.83); g.stroke(); }
-      }
-      if (n > 0 && n < 4) {                               // morning mist pooled in each valley
-        const mist = g.createLinearGradient(0, h * base - 10, 0, h * base + 110);
-        mist.addColorStop(0, 'rgba(255,215,200,0)'); mist.addColorStop(0.55, 'rgba(255,215,200,0.42)'); mist.addColorStop(1, 'rgba(255,215,200,0)');
-        g.fillStyle = mist; g.fillRect(0, h * base - 10, w, 120);
-      }
     });
+    // the valley floor: rows of fields that grow as they come nearer (lower on the canvas)
+    const palette = ['#6f7f45', '#8a8f4e', '#a39a5a', '#7b6f44', '#5f7340', '#93834f', '#4f6a3c', '#b0a468', '#667a3e', '#9c8f58'];
+    const rows = 16, top = H0 + 30, rowY = i => top + (h - top) * Math.pow(i / rows, 1.7);
+    for (let i = 0; i < rows; i++) {
+      const y0 = rowY(i), y1 = rowY(i + 1), scale = 0.25 + i / rows * 2.2;
+      let x = 0;
+      while (x < w) {
+        const fw = Math.min(w - x, (120 + rand() * 260) * scale), lean = (rand() - 0.5) * 60 * scale;
+        g.fillStyle = palette[rand() * palette.length | 0];
+        g.beginPath(); g.moveTo(x, y0); g.lineTo(x + fw, y0); g.lineTo(x + fw + lean, y1 + 1); g.lineTo(x + lean, y1 + 1); g.fill();
+        if (rand() < 0.3) {                               // a vineyard or ploughed field: fine parallel rows
+          g.save(); g.clip(); g.strokeStyle = 'rgba(40,50,25,0.35)'; g.lineWidth = Math.max(1, scale);
+          for (let k = x - 80; k < x + fw + 80; k += 7 * scale + 3) { g.beginPath(); g.moveTo(k, y0); g.lineTo(k + lean, y1); g.stroke(); }
+          g.restore();
+        }
+        g.strokeStyle = 'rgba(38,52,30,0.7)'; g.lineWidth = 1.5 * scale;       // hedge down the side
+        g.beginPath(); g.moveTo(x + fw, y0); g.lineTo(x + fw + lean, y1); g.stroke();
+        x += fw;
+      }
+      g.fillStyle = 'rgba(38,52,30,0.7)'; g.fillRect(0, y0 - scale, w, 2 * scale);   // hedge along the top
+      for (let k = 0; k < 46; k++) {                      // cypresses and round oaks
+        const tx = rand() * w, ty = y0 + rand() * (y1 - y0), th = (7 + rand() * 9) * scale, cypress = rand() < 0.6;
+        g.fillStyle = cypress ? '#26392a' : '#3c5230';
+        wrap(ox => { g.beginPath(); g.ellipse(tx + ox, ty - th * (cypress ? 0.5 : 0.3), th * (cypress ? 0.16 : 0.42), th * (cypress ? 0.55 : 0.34), 0, 0, Math.PI * 2); g.fill(); });
+      }
+      if (i > 2 && i < 13) for (let k = 0; k < 5; k++) {  // farmhouses
+        const fx = rand() * w, fy = y0 + (y1 - y0) * 0.5, u = 5 * scale;
+        wrap(ox => {
+          g.fillStyle = '#b9a586'; g.fillRect(fx + ox - u * 1.6, fy - u * 1.5, u * 3.2, u * 1.6);
+          g.fillStyle = '#8a4a34'; g.beginPath(); g.moveTo(fx + ox - u * 2, fy - u * 1.5); g.lineTo(fx + ox, fy - u * 2.5); g.lineTo(fx + ox + u * 2, fy - u * 1.5); g.fill();
+        });
+      }
+    }
+    // white gravel roads winding down from the horizon
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    for (let r = 0; r < 5; r++) {
+      const baseX = (r + 0.5) * w / 5 + (rand() - 0.5) * 300, ph = rand() * 6;
+      for (let i = 0; i < 60; i++) {
+        const t0 = i / 60, t1 = (i + 1) / 60, at = t => [baseX + 380 * Math.sin(t * 7 + ph) * t + 200 * t, top + (h - top) * Math.pow(t, 1.7)];
+        const [xa, ya] = at(t0), [xb, yb] = at(t1);
+        g.strokeStyle = '#d9cdb4'; g.lineWidth = 1.5 + t0 * 16;
+        wrap(ox => { g.beginPath(); g.moveTo(xa + ox, ya); g.lineTo(xb + ox, yb); g.stroke(); });
+      }
+    }
+    // distance: haze thickest at the horizon, and mist lying in the valley
+    const haze = g.createLinearGradient(0, H0 - 10, 0, H0 + 420);
+    haze.addColorStop(0, 'rgba(176,170,196,0.85)'); haze.addColorStop(0.25, 'rgba(176,170,196,0.5)'); haze.addColorStop(1, 'rgba(176,170,196,0)');
+    g.globalCompositeOperation = 'source-atop';          // only where land has been painted
+    g.fillStyle = haze; g.fillRect(0, H0 - 10, w, 430);
+    for (let i = 0; i < 36; i++) {
+      const mx = rand() * w, my = H0 + 60 + rand() * 300, mw = 300 + rand() * 700;
+      const mist = g.createRadialGradient(0, 0, 0, 0, 0, 1);
+      mist.addColorStop(0, 'rgba(255,236,226,0.5)'); mist.addColorStop(1, 'rgba(255,236,226,0)');
+      wrap(ox => { g.save(); g.translate(mx + ox, my); g.scale(mw, 22 + rand() * 30); g.fillStyle = mist; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore(); });
+    }
+    g.globalCompositeOperation = 'source-over';
   });
+
+  // The neighbours to the south: plaster fronts with shuttered windows, pantile roofs.
+  const facadeTex = tex(512, 512, (g, s) => {
+    g.fillStyle = '#e9dcc4'; g.fillRect(0, 0, s, s);
+    for (let i = 0; i < 500; i++) {                       // weathering
+      g.fillStyle = rand() < 0.5 ? 'rgba(255,245,225,0.06)' : 'rgba(120,90,60,0.06)';
+      g.beginPath(); g.arc(rand() * s, rand() * s, 8 + rand() * 50, 0, Math.PI * 2); g.fill();
+    }
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 3; c++) {
+      const x = 64 + c * 170, y = 34 + r * 124, ww = 48, wh = 78;
+      g.fillStyle = '#cbbd9f'; g.fillRect(x - 8, y - 8, ww + 16, wh + 18);         // stone surround
+      g.fillStyle = '#1d2228'; g.fillRect(x, y, ww, wh);                           // dark glass
+      g.fillStyle = (r + c) % 3 ? '#4f6a4a' : '#6b4a33';                           // shutters, some folded back
+      if ((r * 3 + c) % 4 === 1) g.fillRect(x, y, ww, wh);
+      else { g.fillRect(x - 26, y, 24, wh); g.fillRect(x + ww + 2, y, 24, wh); }
+    }
+  });
+  const roofTex = tex(256, 256, (g, s) => {
+    g.fillStyle = '#a8553a'; g.fillRect(0, 0, s, s);
+    for (let x = 0; x < s; x += 16) {
+      g.fillStyle = `hsl(${12 + rand() * 10}, ${45 + rand() * 15}%, ${36 + rand() * 12}%)`; g.fillRect(x, 0, 11, s);
+      g.fillStyle = 'rgba(40,15,8,0.45)'; g.fillRect(x + 11, 0, 5, s);
+    }
+    g.strokeStyle = 'rgba(40,15,8,0.3)'; g.lineWidth = 2;
+    for (let y = 0; y < s; y += 32) { g.beginPath(); g.moveTo(0, y); g.lineTo(s, y); g.stroke(); }
+  }, 3, 2);
 
   // ---------- shared materials ----------
   const wood = (base, grain, rep) => { const t = woodTex(base, grain, rep); return mat(0xffffff, t, { bumpMap: t, bumpScale: 0.6, roughness: 0.7 }); };
@@ -481,7 +540,6 @@ export function buildScene(scene, renderer) {
   const stone = mat(0xe6dcc4, null, { roughness: 0.95 });
   const cream = mat(0xf7f2e6);
   const leafGreen = mat(0x4d7a3a);
-  const darkLeaf = mat(0x2f5a2c);
   const ceramic = mat(0xffffff, majolicaTex, { roughness: 0.25 });
   // Bevelled panes use real transmission, so the view outside bends at the bevels.
   const glass = new THREE.MeshPhysicalMaterial({ color: 0xffffff, transmission: 1, roughness: 0.02, ior: 1.52, thickness: 0.06, specularIntensity: 1 });
@@ -567,22 +625,26 @@ export function buildScene(scene, renderer) {
     stencilFunc: THREE.AlwaysStencilFunc, stencilZPass: THREE.ReplaceStencilOp,
   });
   const throughWindows = { stencilWrite: true, stencilRef: 1, stencilFunc: THREE.EqualStencilFunc };
-  const outside = new THREE.Group();
+  const outside = new THREE.Group(), townMats = [];
   scene.add(outside);
   hideFromAO.push(outside);
   const sky = {                                                     // set by setSun()
     map: { value: landTex }, uSun: { value: sunDir },
     uZenith: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() },
-    uLand: { value: new THREE.Color() }, uCloud: { value: new THREE.Color() }, uDisc: { value: 0 },
+    uLand: { value: new THREE.Color() }, uCloud: { value: new THREE.Color() }, uDisc: { value: 0 }, uTime: { value: 0 },
   };
-  const eye = 1.4, R = 20, tall = 14, y0 = eye - tall * 0.45;       // horizon at eye level
+  const eye = 1.4, R = 20, tall = 22, y0 = eye - tall * (1 - LAND.horizon / LAND.h);   // horizon at eye level, most of the backdrop below it
   const pano = new THREE.Mesh(new THREE.CylinderGeometry(R, R, tall, 96, 1, true), new THREE.ShaderMaterial({
     uniforms: sky, side: THREE.BackSide, ...throughWindows,
     vertexShader: `varying vec3 vDir; varying vec2 vUv;
       void main(){ vUv = uv; vDir = (modelMatrix * vec4(position, 1.)).xyz - vec3(0., ${eye.toFixed(1)}, 0.);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }`,
-    fragmentShader: `uniform sampler2D map; uniform vec3 uSun, uZenith, uHorizon, uGlow, uLand, uCloud; uniform float uDisc;
+    fragmentShader: `uniform sampler2D map; uniform vec3 uSun, uZenith, uHorizon, uGlow, uLand, uCloud; uniform float uDisc, uTime;
       varying vec3 vDir; varying vec2 vUv;
+      float hash(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+      float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3. - 2. * f);
+        return mix(mix(hash(i), hash(i + vec2(1., 0.)), f.x), mix(hash(i + vec2(0., 1.)), hash(i + vec2(1., 1.)), f.x), f.y); }
+      float fbm(vec2 p){ float a = .5, s = 0.; for (int i = 0; i < 5; i++) { s += a * noise(p); p = p * 2.03 + vec2(17., 9.); a *= .5; } return s; }
       void main(){
         vec3 d = normalize(vDir);
         float toSun = max(dot(d, uSun), 0.);
@@ -590,9 +652,16 @@ export function buildScene(scene, renderer) {
         vec3 c = mix(uHorizon, uZenith, pow(clamp(d.y * 2.2 + .02, 0., 1.), .55));
         c += uGlow * (.55 * pow(toSun, 6.) + .9 * pow(toSun, 40.) + .5 * exp(-abs(d.y) * 9.) * pow(sameSide, 3.));
         c += uDisc * vec3(1., .42, .1) * smoothstep(.99988, .99993, dot(d, uSun));          // the sun's disc
-        vec4 t = texture2D(map, vUv);                                                        // hills and cloud in front of it
-        vec3 lit = mix(uLand * (1. + 1.5 * pow(sameSide, 4.)), uCloud * (1. + 2.5 * pow(toSun, 3.)), smoothstep(.44, .5, vUv.y));
-        gl_FragColor = vec4(mix(c, t.rgb * lit, t.a), 1.);
+        if (d.y > 0.) {                                                                      // clouds, on a flat layer overhead
+          vec2 cp = d.xz / (d.y + .12) * 1.4 + vec2(uTime * .012, uTime * .004);             // drifting on the wind
+          float dens = fbm(cp), cover = smoothstep(.5, .74, dens);
+          float thin = clamp((dens - fbm(cp + normalize(uSun.xz) * .35)) * 3. + .5, 0., 1.); // less cloud towards the sun = lit side
+          vec3 cl = mix(uCloud * .3, uCloud * 1.5 + uGlow * .7 * pow(toSun, 2.), thin);
+          cl += uGlow * 1.4 * pow(toSun, 12.) * (1. - cover * .5);                           // edges catch fire near the sun
+          c = mix(c, cl, cover * smoothstep(0., .1, d.y) * .92);
+        }
+        vec4 t = texture2D(map, vUv);                                                        // the land, in front of all that
+        gl_FragColor = vec4(mix(c, t.rgb * uLand * (1. + 1.5 * pow(sameSide, 4.)), t.a), 1.);
       }`,
   }));
   pano.position.y = y0 + tall / 2;
@@ -602,6 +671,43 @@ export function buildScene(scene, renderer) {
   ground.position.y = y0;
   ground.renderOrder = -1;
   outside.add(pano, ground);
+
+  // The town climbs away to the south: a tall neighbour across the lane, lower
+  // roofs stepping down towards the cliff edge, and the bell tower beyond.
+  // Real geometry, so it shifts as you move and takes the sunrise on its east faces.
+  {
+    const seenThrough = m => Object.assign(m, throughWindows);
+    // Out of doors the whole sky lights a wall, far more than it lights our room.
+    // That open-air skylight is given to these materials as a glow that setSun() raises with the dawn.
+    const openAir = (map, tint) => {
+      const m = seenThrough(new THREE.MeshStandardMaterial({ map, color: tint, roughness: 1, emissiveMap: map, emissive: 0x000000 }));
+      townMats.push([m, new THREE.Color(tint)]);
+      return m;
+    };
+    const wallMat = tint => openAir(facadeTex, tint);
+    const tiles = openAir(roofTex, 0xffffff);
+    const hip = new THREE.ConeGeometry(Math.SQRT1_2, 1, 4).rotateY(Math.PI / 4);      // a hipped roof one unit square
+    const street = -9;                                                                 // how far below our floor the lane is
+    function house(x, z, w, d, eave, tint, pitch = 1.3) {
+      const body = new THREE.Mesh(new THREE.BoxGeometry(w, eave - street, d), wallMat(tint));
+      body.position.set(x, (eave + street) / 2, z);
+      const roof = new THREE.Mesh(hip, tiles);
+      roof.scale.set(w + 0.5, pitch, d + 0.5);
+      roof.position.set(x, eave + pitch / 2, z);
+      outside.add(body, roof);
+    }
+    house(8.2, 2.6, 5.4, 7.4, 2.9, 0xf0d9a8);            // across the lane, filling the west half of the view
+    house(10.5, -4.4, 6, 5, -0.6, 0xe9c9a0, 1.5);        // lower, towards the cliff: we look down on its roof
+    house(15.5, -8.5, 5, 5.5, 0.9, 0xf2e2c4);
+    house(11.5, -10.5, 4.5, 4, -2.2, 0xe3b98e, 1.2);     // right on the cliff edge
+    house(16.5, 1.5, 6, 6, 4.2, 0xead2b0);
+    house(15.2, -2.6, 2.6, 2.6, 8.2, 0xdcc9a8, 2.2);     // the bell tower
+    const belfry = new THREE.Mesh(new THREE.BoxGeometry(2.7, 1.3, 2.7), seenThrough(new THREE.MeshStandardMaterial({ color: 0x3a3026, roughness: 1 })));
+    belfry.position.set(15.2, 7.0, -2.6);                // the dark openings where the bells hang
+    const cypress = new THREE.Mesh(new THREE.ConeGeometry(0.7, 6.5, 10), seenThrough(new THREE.MeshStandardMaterial({ color: 0x24382a, roughness: 1 })));
+    cypress.position.set(7.4, -1.6, -3.6);
+    outside.add(belfry, cypress);
+  }
 
   // ---------- windows ----------
   function paneGeo(pw, ph) {
@@ -926,7 +1032,7 @@ export function buildScene(scene, renderer) {
     cyl(0.0015, 0.0015, 0.012, mat(0x1a1410), 0, 0.042 + tall + 0.006, 0, g);     // wick, unlit
   }
   { // "drawer" against the west wall, drawers facing east into the room
-    const x0 = X(880), x1 = X(1380), z0 = Z(1050), z1 = D / 2 - 0.03, top = 0.85;
+    const x0 = X(880), x1 = X(1380), z0 = Z(1105), z1 = D / 2 - 0.03, top = 0.85;   // shallower, so the counter's drawers clear it
     chest(x1 - x0, top, z1 - z0, 3, 2, (x0 + x1) / 2, (z0 + z1) / 2, Math.PI);
     // on top: a bowl of lemons, two candles, a couple of books
     const bowl = group(X(1130), top, Z(1195));
@@ -935,18 +1041,18 @@ export function buildScene(scene, renderer) {
     const lemon = mat(0xf3d23a, null, { roughness: 0.5 });
     [[0, 0.07, 0], [0.07, 0.075, 0.02], [-0.06, 0.075, 0.04], [0.01, 0.075, -0.07], [0.02, 0.12, 0.01]].forEach(([x, y, z], i) =>
       ball(0.04, lemon, x, y, z, bowl, 1.25, 1, 1).rotation.y = i * 1.3);
-    candle(X(960), top, Z(1170), 0.15);
+    candle(X(960), top, Z(1185), 0.15);
     candle(X(1005), top, Z(1235), 0.1);
     book(0.16, 0.03, 0.22, 0x2f4f6b, X(1300), top, Z(1190), 0.3);
     book(0.15, 0.026, 0.21, 0x8a3b2a, X(1302), top + 0.03, Z(1192), 0.12);
   }
-  { // "small counter" by the bed head, against the south wall, with book and lamp
-    const x0 = X(1450), x1 = W / 2 - 0.03, z0 = Z(880), z1 = Z(1100), h = 0.55;
+  { // "small counter" by the bed head, against the south wall, with book and lamp; its drawers open northwards
+    const x0 = X(1450), x1 = W / 2 - 0.03, z0 = Z(815), z1 = Z(1035), h = 0.55;     // drawn up beside the bed
     const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
     const g = chest(z1 - z0, h, x1 - x0, 2, 1, cx, cz, -Math.PI / 2);
     book(0.2, 0.035, 0.27, 0x7a2a22, -0.13, h, 0.12, 0.25, g);
     // after the quarter turn, local x runs west and local z runs north
-    const lamp = group(Z(1000) - cz, h, -(X(1590) - cx), 0, g);
+    const lamp = group(Z(935) - cz, h, -(X(1590) - cx), 0, g);
     ball(1, ceramic, 0, 0.09, 0, lamp, 0.07, 0.09, 0.07);
     cyl(0.02, 0.03, 0.06, brass, 0, 0.2, 0, lamp);
     cyl(0.05, 0.06, 0.012, brass, 0, 0.006, 0, lamp);
@@ -959,26 +1065,33 @@ export function buildScene(scene, renderer) {
     add(new THREE.TorusGeometry(r, r * 0.11, 10, 36), terracotta, 0, h, 0, g).rotation.x = Math.PI / 2;
     cyl(r * 0.94, r * 0.94, 0.01, mat(0x3b2a1c), 0, h - 0.01, 0, g);
   }
-  { // tall lemon tree in the south-west corner
+  { // a potted olive tree in the south-west corner: the classic Tuscan house tree, kept indoors over winter
     const g = group(X(1545), 0, Z(1225));
     pot(g, 0.2, 0.38);
-    cyl(0.018, 0.03, 0.95, mat(0x6b5236), 0, 0.38 + 0.475, 0, g);
-    const cy = 1.6, lemon = mat(0xf3d23a, null, { roughness: 0.5 });
-    ball(1, darkLeaf, 0, cy, 0, g, 0.24, 0.34, 0.24);
-    const leaves = [[], []], size = new THREE.Vector3(0.035, 0.007, 0.075);
-    for (let i = 0; i < 170; i++) {
-      const u = rand() * 2 - 1, a = rand() * Math.PI * 2, r = Math.sqrt(1 - u * u);
-      const p = new THREE.Vector3(r * Math.cos(a) * 0.28, cy + u * 0.38, r * Math.sin(a) * 0.28);
-      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rand() * 3, rand() * 3, rand() * 3));
-      leaves[i % 3 ? 0 : 1].push(new THREE.Matrix4().compose(p, q, size));
+    const bark = mat(0x6f6557, null, { roughness: 1 }), up = new THREE.Vector3(0, 1, 0);
+    const limb = (from, to, r0, r1) => {
+      const d = to.clone().sub(from), m = cyl(r1, r0, d.length(), bark, 0, 0, 0, g);
+      m.position.copy(from).addScaledVector(d, 0.5);
+      m.quaternion.setFromUnitVectors(up, d.normalize());
+    };
+    // a slightly crooked trunk, then five boughs
+    const knee = new THREE.Vector3(0.03, 0.75, -0.02), fork = new THREE.Vector3(-0.02, 1.08, 0.02);
+    limb(new THREE.Vector3(0, 0.36, 0), knee, 0.032, 0.026);
+    limb(knee, fork, 0.026, 0.02);
+    const tips = [[0.2, 1.5, 0.08], [-0.2, 1.55, -0.1], [0.04, 1.78, -0.16], [-0.1, 1.72, 0.2], [0.12, 1.62, 0.2]].map(t => new THREE.Vector3(...t));
+    const narrow = new THREE.Vector3(0.011, 0.003, 0.045), leaves = [[], []];
+    for (const tip of tips) {
+      limb(fork, tip, 0.016, 0.006);
+      for (let i = 0; i < 110; i++) {                    // narrow leaves along the outer half of each bough
+        const t = 0.35 + rand() * 0.75, at = fork.clone().lerp(tip, t);
+        at.x += (rand() - 0.5) * 0.24; at.y += (rand() - 0.5) * 0.22; at.z += (rand() - 0.5) * 0.24;
+        const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rand() * 3, rand() * 6, rand() * 3));
+        leaves[i % 2].push(new THREE.Matrix4().compose(at, q, narrow));
+      }
     }
-    const leafGeo = new THREE.SphereGeometry(1, 8, 6);
-    scatter(leafGeo, leafGreen, leaves[0], g);
-    scatter(leafGeo, darkLeaf, leaves[1], g);
-    for (let i = 0; i < 10; i++) {
-      const u = rand() * 1.4 - 0.9, a = rand() * Math.PI * 2, r = Math.sqrt(1 - u * u);
-      ball(0.034, lemon, r * Math.cos(a) * 0.3, cy + u * 0.38, r * Math.sin(a) * 0.3, g, 1, 1.25, 1);
-    }
+    const leafGeo = new THREE.SphereGeometry(1, 6, 4);
+    scatter(leafGeo, mat(0x7f8f6c, null, { roughness: 0.7 }), leaves[0], g);     // grey-green above
+    scatter(leafGeo, mat(0xa9b39a, null, { roughness: 0.6 }), leaves[1], g);     // silver underneath
   }
 
   // ---------- stand-up desk in the north-east corner: thick chestnut top on trestle slabs ----------
@@ -1186,7 +1299,7 @@ export function buildScene(scene, renderer) {
   // every light, the sky and the beams to match. Colours are linear RGB.
   const { lerp, smoothstep: ramp, DEG2RAD } = THREE.MathUtils;
   const blend = (out, a, b, t) => out.setRGB(lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t));
-  const landBase = new THREE.Color(0x2f3d20);
+  const landBase = new THREE.Color(0x7a8348);
   function setSun(minutes) {
     const el = 0.183 * minutes, az = 1.5 + 0.17 * minutes;                     // degrees up, degrees south of east
     sunDir.set(Math.sin(az * DEG2RAD) * Math.cos(el * DEG2RAD), Math.sin(el * DEG2RAD), -Math.cos(az * DEG2RAD) * Math.cos(el * DEG2RAD));
@@ -1207,16 +1320,17 @@ export function buildScene(scene, renderer) {
     blend(sky.uHorizon.value, [0.09, 0.03, 0.03], [0.5, 0.23, 0.11], dawn);
     blend(sky.uGlow.value, [0.45, 0.07, 0.01], [1.2, 0.5, 0.18], dawn);
     blend(sky.uLand.value, [0.05, 0.05, 0.07], [0.42, 0.36, 0.3], dawn);
-    blend(sky.uCloud.value, [0.1, 0.05, 0.06], [0.8, 0.5, 0.42], dawn);
+    blend(sky.uCloud.value, [0.07, 0.045, 0.06], [0.85, 0.6, 0.5], dawn);
     sky.uDisc.value = 30;
     ground.material.color.copy(landBase).multiply(sky.uLand.value);
+    for (const [m, tint] of townMats) m.emissive.copy(tint).multiply(sky.uHorizon.value).multiplyScalar(0.9);
 
     blend(volumetric.color, [1, 0.2, 0.04], [1, 0.46, 0.17], day).multiplyScalar(power / 11);
     return { exposure: lerp(1.4, 1.0, ramp(el, 0, 4)), progress: ramp(minutes, SUNRISE.start, 35) };
   }
   // seconds of breeze so far, and how hard it is blowing (0..1); returns the current swell for the sound of it
   function setWind(seconds, strength) {
-    wind.uTime.value = seconds;
+    wind.uTime.value = sky.uTime.value = seconds;                              // the clouds drift on the same clock
     wind.uWind.value = strength;
     return 0.55 + 0.45 * Math.sin(seconds * 0.6) * Math.sin(seconds * 0.23 + 1.3);
   }

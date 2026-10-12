@@ -212,7 +212,7 @@ export function createPipeline(scene, camera) {
     const frame = t => {
       requestAnimationFrame(frame);
       update();
-      if (pending <= 0) { streak = 0; return; }
+      if (pending <= 0 || !innerWidth || !innerHeight) { streak = 0; return; }   // nothing to draw, or nowhere to draw it
       pending--;
       renderer.info.reset();
       composer.render();
