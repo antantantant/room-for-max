@@ -23,7 +23,7 @@
 <body>
 <div id="label">
   <h1>Apartment Room for Max</h1>
-  <p>Sunrise · drag to rotate · scroll to zoom · the two-window wall faces east</p>
+  <p>First light · drag to rotate · scroll to zoom · the two-window wall faces east</p>
   <button data-view="overview">Overview</button><button data-view="sketch">Sketch view</button><button data-view="plan">Floor plan</button>
 </div>
 <script type="module">
@@ -35,7 +35,9 @@ import { buildScene, views } from './src/scene.js';
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 100);
 const pipeline = createPipeline(scene, camera);
-pipeline.hideFromAO.push(...buildScene(scene, pipeline.renderer).hideFromAO);
+const room = buildScene(scene, pipeline.renderer);
+pipeline.hideFromAO.push(...room.hideFromAO);
+pipeline.setVolumetric(room.volumetric);
 
 const controls = new OrbitControls(camera, pipeline.renderer.domElement);
 controls.enableDamping = true;
@@ -44,8 +46,8 @@ controls.minDistance = 0.5;
 controls.maxDistance = 14;
 controls.addEventListener('change', () => pipeline.invalidate());
 
-function setView(name) {
-  const [p, t] = views[name];
+function setView(name, custom) {
+  const [p, t] = custom || views[name];
   camera.position.set(...p);
   controls.target.set(...t);
   controls.update();
@@ -53,6 +55,7 @@ function setView(name) {
 }
 document.querySelectorAll('button').forEach(b => b.onclick = () => setView(b.dataset.view));
 setView('overview');
+window.__look = (position, target) => setView(null, [position, target]);   // console helper: aim the camera anywhere
 
 pipeline.start(() => controls.update());
 </script>

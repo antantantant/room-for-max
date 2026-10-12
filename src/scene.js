@@ -13,8 +13,8 @@ const X = px => (px - 30) * S - W / 2;   // plan x -> world x (north wall .. sou
 const Z = py => (py - 300) * S - D / 2;  // plan y -> world z (east wall .. west wall)
 const Y0 = 0.7, Y1 = 2.15;               // sill and head height shared by all three windows
 
-// Sunrise: the sun sits low in the east, a touch to the south.
-const sunDir = new THREE.Vector3(0.12, 0.27, -1).normalize();
+// First light: the sun has only just cleared the hills, due east and a touch south.
+const sunDir = new THREE.Vector3(0.12, 0.10, -1).normalize();
 
 export const views = {
   overview: [[-3.3, 3.3, 4.6], [0.2, 0.85, -0.1]],
@@ -100,6 +100,103 @@ export function buildScene(scene, renderer) {
     return add(geo, mats, x, y, z, parent);
   }
 
+  // A pillow: pinched to nothing along its seam, plump in the middle, corners that stick out a little.
+  function pillowGeo(w, d, t, n = 28) {
+    const pos = [], uv = [], idx = [];
+    for (const side of [1, -1]) {
+      const base = pos.length / 3;
+      for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
+        const u = -1 + 2 * i / n, v = -1 + 2 * j / n;
+        const plump = Math.pow(Math.max(0, (1 - u * u) * (1 - v * v)), 0.3);
+        const crease = 0.004 * Math.sin(u * 9 + v * 3) * Math.sin(v * 7 - u * 2);
+        pos.push(u * w / 2 * (1 - 0.07 * (1 - v * v)), side * (t / 2) * plump * (1 + crease / t * 1.5), v * d / 2 * (1 - 0.07 * (1 - u * u)));
+        uv.push((u + 1) / 2, (v + 1) / 2);
+      }
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        const a = base + j * (n + 1) + i, b = a + 1, c = a + n + 1, e = c + 1;
+        side > 0 ? idx.push(a, c, b, b, c, e) : idx.push(a, b, c, b, e, c);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    return g;
+  }
+
+  // Fluff. Soft things get a coat of fine fibres drawn as stacked shells: each
+  // shell is the surface pushed out a little further, and the shader keeps only
+  // the dots where a fibre is still that long. One draw call per material.
+  const furCache = new Map();
+  function furMaterial(base, curl, shade) {
+    const key = base.uuid + '|' + curl + '|' + shade;
+    if (furCache.has(key)) return furCache.get(key);
+    const m = new THREE.MeshStandardMaterial({ color: base.color, roughness: 1, alphaTest: 0.5, alphaToCoverage: true, ...(base.map && { map: base.map }) });
+    m.onBeforeCompile = sh => {
+      sh.uniforms.uCurl = { value: curl };
+      sh.uniforms.uShade = { value: shade };
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute float aShell;\nattribute vec2 furUv;\nvarying float vShell;\nvarying vec2 vFurUv;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvShell = aShell;\nvFurUv = furUv;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', `#include <common>
+          varying float vShell; varying vec2 vFurUv; uniform float uCurl, uShade;
+          float furHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }`)
+        .replace('#include <alphatest_fragment>', `
+          vec2 fu = vFurUv + uCurl * vShell * vec2(sin(vFurUv.y * 1.7), cos(vFurUv.x * 1.7));   // curl the fibre as it grows
+          vec2 cell = floor(fu);
+          float len = 0.35 + 0.65 * furHash(cell);                                              // each fibre its own length
+          vec2 root = (vec2(furHash(cell + 7.3), furHash(cell + 19.1)) - 0.5) * 0.4;
+          float r = length(fract(fu) - 0.5 - root) * 2.0;
+          diffuseColor.a = (1.0 - vShell / len) - r * 0.9 + 0.5;                                // tapers to a tip
+          diffuseColor.rgb *= mix(uShade, 1.06, vShell);                                           // darker down in the pile
+          #include <alphatest_fragment>`);
+    };
+    m.customProgramCacheKey = () => 'fur';
+    furCache.set(key, m);
+    return m;
+  }
+  // uvSize = [metres per unit of u, metres per unit of v]; guessed from the bounding box when omitted.
+  function fluff(meshes, { length, layers, strand, curl = 0, droop = 0.25, shade = 0.5, uvSize }) {
+    const byMat = new Map();
+    for (const mesh of meshes) {
+      mesh.updateWorldMatrix(true, false);
+      const src = (mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone()).applyMatrix4(mesh.matrixWorld);
+      src.computeBoundingBox();
+      const size = src.boundingBox.getSize(new THREE.Vector3());
+      const us = (uvSize ? uvSize[0] : Math.PI * Math.max(size.x, size.z)) / strand;
+      const vs = (uvSize ? uvSize[1] : Math.PI / 2 * Math.max(size.y, Math.min(size.x, size.z))) / strand;
+      const P = src.attributes.position, N = src.attributes.normal, UV = src.attributes.uv, n = P.count;
+      if (!byMat.has(mesh.material)) byMat.set(mesh.material, []);
+      for (let i = 1; i <= layers; i++) {
+        const t = i / layers, out = length * t, sag = droop * length * t * t;
+        const pos = new Float32Array(n * 3), fu = new Float32Array(n * 2);
+        for (let k = 0; k < n; k++) {
+          pos[3 * k] = P.getX(k) + N.getX(k) * out;
+          pos[3 * k + 1] = P.getY(k) + N.getY(k) * out - sag;
+          pos[3 * k + 2] = P.getZ(k) + N.getZ(k) * out;
+          fu[2 * k] = UV.getX(k) * us; fu[2 * k + 1] = UV.getY(k) * vs;
+        }
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        g.setAttribute('normal', N.clone());
+        g.setAttribute('uv', UV.clone());
+        g.setAttribute('furUv', new THREE.BufferAttribute(fu, 2));
+        g.setAttribute('aShell', new THREE.BufferAttribute(new Float32Array(n).fill(t), 1));
+        byMat.get(mesh.material).push(g);
+      }
+      src.dispose();
+    }
+    for (const [material, parts] of byMat) {
+      const coat = new THREE.Mesh(mergeGeometries(parts), furMaterial(material, curl, shade));
+      coat.receiveShadow = true;
+      scene.add(coat);
+      hideFromAO.push(coat);      // the solid surface underneath does the occluding
+      parts.forEach(g => g.dispose());
+    }
+  }
+
   function tex(w, h, draw, repeatX = 1, repeatY = repeatX) {
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
@@ -136,6 +233,20 @@ export function buildScene(scene, renderer) {
       }
     }
   }, W / 1.2, D / 1.2);
+  // the same tile grid as a height map: tiles proud of the grout, slightly pitted
+  const floorBump = tex(1024, 1024, (g, w) => {
+    g.fillStyle = '#222'; g.fillRect(0, 0, w, w);
+    const q = w / 4;
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+      g.fillStyle = '#8a8a8a'; g.fillRect(i * q + 5, j * q + 5, q - 10, q - 10);
+      const v = 205 + rand() * 40 | 0;
+      g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(i * q + 9, j * q + 9, q - 18, q - 18);
+      for (let k = 0; k < 60; k++) {
+        g.fillStyle = 'rgba(0,0,0,0.12)';
+        g.beginPath(); g.arc(i * q + 12 + rand() * (q - 24), j * q + 12 + rand() * (q - 24), 1 + rand() * 5, 0, Math.PI * 2); g.fill();
+      }
+    }
+  }, W / 1.2, D / 1.2);
 
   const woodTex = (base, grain, rep = 1) => tex(1024, 1024, (g, w, h) => {
     g.fillStyle = base; g.fillRect(0, 0, w, h);
@@ -149,28 +260,24 @@ export function buildScene(scene, renderer) {
     g.globalAlpha = 1;
   }, rep);
 
-  // Quilt: stitched squares with little hippo faces. One tile = 0.4 m.
-  const quiltTex = tex(512, 512, (g, s) => {
+  // Duvet cover: little hippo faces scattered on cream. One tile covers one quilted pocket.
+  const duvetTex = tex(512, 512, (g, s) => {
     g.fillStyle = '#f6efdf'; g.fillRect(0, 0, s, s);
-    g.strokeStyle = '#d3c6aa'; g.lineWidth = 3; g.setLineDash([12, 9]);
-    for (const p of [0, s / 2]) {
-      g.beginPath(); g.moveTo(p + 2, 0); g.lineTo(p + 2, s); g.stroke();
-      g.beginPath(); g.moveTo(0, p + 2); g.lineTo(s, p + 2); g.stroke();
-    }
-    g.setLineDash([]);
-    const hippo = (x, y) => {
+    const hippo = (x, y, k) => {
+      g.save(); g.translate(x, y); g.scale(k, k);
       g.fillStyle = '#e88fa8';
-      for (const dx of [-34, 34]) { g.beginPath(); g.arc(x + dx, y - 32, 14, 0, Math.PI * 2); g.fill(); }
-      g.beginPath(); g.ellipse(x, y, 54, 38, 0, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#f6b5c6'; g.beginPath(); g.ellipse(x, y + 14, 36, 20, 0, 0, Math.PI * 2); g.fill();
+      for (const dx of [-34, 34]) { g.beginPath(); g.arc(dx, -32, 14, 0, Math.PI * 2); g.fill(); }
+      g.beginPath(); g.ellipse(0, 0, 54, 38, 0, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#f6b5c6'; g.beginPath(); g.ellipse(0, 14, 36, 20, 0, 0, Math.PI * 2); g.fill();
       g.fillStyle = '#3a2228';
       for (const dx of [-20, 20]) {
-        g.beginPath(); g.arc(x + dx, y - 12, 6, 0, Math.PI * 2); g.fill();
-        g.beginPath(); g.arc(x + dx * 0.6, y + 14, 4, 0, Math.PI * 2); g.fill();
+        g.beginPath(); g.arc(dx, -12, 6, 0, Math.PI * 2); g.fill();
+        g.beginPath(); g.arc(dx * 0.6, 14, 4, 0, Math.PI * 2); g.fill();
       }
+      g.restore();
     };
-    hippo(128, 128); hippo(384, 384);
-  }, 1 / 0.4);
+    hippo(140, 150, 0.8); hippo(372, 362, 0.8);
+  });
 
   // Mattress edge: vertical stitching, as drawn. One tile = 0.12 m.
   const stitchTex = tex(128, 128, (g, s) => {
@@ -205,14 +312,6 @@ export function buildScene(scene, renderer) {
     g.lineWidth = 3;
     for (let x = 16; x < s; x += 64) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, s); g.stroke(); }
   }, rx, ry);
-
-  const hatchTex = tex(256, 256, (g, s) => {
-    g.fillStyle = '#d29a5a'; g.fillRect(0, 0, s, s);
-    g.strokeStyle = '#b07636'; g.lineWidth = 4;
-    for (const p of [32, 160]) { g.beginPath(); g.moveTo(p, 0); g.lineTo(p, s); g.moveTo(0, p); g.lineTo(s, p); g.stroke(); }
-    g.strokeStyle = 'rgba(255,235,200,0.25)'; g.lineWidth = 2;
-    for (const p of [96, 224]) { g.beginPath(); g.moveTo(p, 0); g.lineTo(p, s); g.moveTo(0, p); g.lineTo(s, p); g.stroke(); }
-  }, 10, 6);
 
   // Chunky knit for throws: ribs of little V stitches.
   const knitTex = (base, light, dark, rx, ry) => tex(128, 128, (g, s) => {
@@ -330,15 +429,16 @@ export function buildScene(scene, renderer) {
   const sunU = Math.atan2(sunDir.x, sunDir.z) / (Math.PI * 2);
   const skyTex = tex(8192, 1024, (g, w, h) => {
     const horizon = h * 0.55, sx = (sunU < 0 ? sunU + 1 : sunU) * w;
+    const sy = horizon - h * (20 * sunDir.y / Math.hypot(sunDir.x, sunDir.z)) / 14;   // where the sun stands on this canvas
     const sky = g.createLinearGradient(0, 0, 0, horizon);
-    sky.addColorStop(0, '#263a78'); sky.addColorStop(0.45, '#6477b4'); sky.addColorStop(0.78, '#e59c92'); sky.addColorStop(1, '#ffd9a2');
+    sky.addColorStop(0, '#0f1838'); sky.addColorStop(0.4, '#2c3a6e'); sky.addColorStop(0.72, '#8a5f86'); sky.addColorStop(0.9, '#e98a62'); sky.addColorStop(1, '#ffc27a');
     g.fillStyle = sky; g.fillRect(0, 0, w, h);
     // the glow of the low sun, spread wide along the horizon
     g.save(); g.translate(sx, horizon - 40); g.scale(1, 0.24);
     const glow = g.createRadialGradient(0, 0, 0, 0, 0, 2600);
     glow.addColorStop(0, 'rgba(255,214,140,0.95)'); glow.addColorStop(0.35, 'rgba(255,160,100,0.55)'); glow.addColorStop(1, 'rgba(255,140,110,0)');
     g.fillStyle = glow; g.fillRect(-2600, -2600, 5200, 5200); g.restore();
-    const halo = g.createRadialGradient(sx, h * 0.167, 0, sx, h * 0.167, 620);
+    const halo = g.createRadialGradient(sx, sy, 0, sx, sy, 620);
     halo.addColorStop(0, 'rgba(255,246,214,1)'); halo.addColorStop(0.12, 'rgba(255,224,160,0.8)'); halo.addColorStop(1, 'rgba(255,200,140,0)');
     g.fillStyle = halo; g.fillRect(sx - 620, 0, 1240, horizon);
     // streaks of cloud, lit pink and gold near the sun
@@ -348,7 +448,7 @@ export function buildScene(scene, renderer) {
       g.fillStyle = `rgba(${180 + 75 * near | 0},${150 + 50 * near | 0},${185 - 40 * near | 0},${0.22 + 0.3 * near})`;
       for (const ox of [-w, 0, w]) { g.beginPath(); g.ellipse(x + ox, y, cw / 2, ch, 0, 0, Math.PI * 2); g.fill(); }
     }
-    const layers = [['#8791b8', 0.52, 26, 3, 7], ['#7f9c97', 0.58, 32, 4, 9], ['#93a273', 0.65, 38, 5, 11], ['#a89c5a', 0.73, 30, 4, 13], ['#617639', 0.82, 34, 6, 15]];
+    const layers = [['#5a5f8c', 0.52, 26, 3, 7], ['#4c5e6c', 0.58, 32, 4, 9], ['#4f5f48', 0.65, 38, 5, 11], ['#585436', 0.73, 30, 4, 13], ['#2f3d20', 0.82, 34, 6, 15]];
     layers.forEach(([color, base, amp, k1, k2], n) => {
       const p1 = rand() * 6, p2 = rand() * 6;   // whole numbers of waves, so the panorama closes on itself
       const ridge = x => h * base + amp * Math.sin(x / w * Math.PI * 2 * k1 + p1) + amp * 0.5 * Math.sin(x / w * Math.PI * 2 * k2 + p2);
@@ -358,13 +458,13 @@ export function buildScene(scene, renderer) {
       g.lineTo(w, h); g.fill();
       if (n >= 1) for (let i = 0; i < 60; i++) {         // cypresses along each ridge
         const x = rand() * w, th = (18 + rand() * 26) * (0.6 + n * 0.35);
-        g.fillStyle = n < 3 ? '#4a6557' : '#2c4630';
+        g.fillStyle = n < 3 ? '#2f4340' : '#1b2a1e';
         g.beginPath(); g.ellipse(x, ridge(x) - th * 0.45, th * 0.14, th * 0.55, 0, 0, Math.PI * 2); g.fill();
       }
       if (n === 2) for (let i = 0; i < 7; i++) {         // farmhouses, a lamp already lit in each
         const fx = (i + 0.35 + rand() * 0.3) * w / 7, y = ridge(fx);
-        g.fillStyle = '#e2bd86'; g.fillRect(fx - 46, y - 50, 92, 52);
-        g.fillStyle = '#a94e2e'; g.beginPath(); g.moveTo(fx - 56, y - 50); g.lineTo(fx, y - 80); g.lineTo(fx + 56, y - 50); g.fill();
+        g.fillStyle = '#8f7a66'; g.fillRect(fx - 46, y - 50, 92, 52);
+        g.fillStyle = '#6a3a2c'; g.beginPath(); g.moveTo(fx - 56, y - 50); g.lineTo(fx, y - 80); g.lineTo(fx + 56, y - 50); g.fill();
         g.fillStyle = '#ffd77a'; for (const dx of [-26, 14]) g.fillRect(fx + dx, y - 36, 12, 16);
       }
       if (n === 4) {                                      // vineyard rows in the foreground
@@ -373,20 +473,21 @@ export function buildScene(scene, renderer) {
       }
       if (n < 4) {                                        // morning mist pooled in each valley
         const mist = g.createLinearGradient(0, h * base - 10, 0, h * base + 110);
-        mist.addColorStop(0, 'rgba(255,226,206,0)'); mist.addColorStop(0.55, 'rgba(255,226,206,0.5)'); mist.addColorStop(1, 'rgba(255,226,206,0)');
+        mist.addColorStop(0, 'rgba(255,190,170,0)'); mist.addColorStop(0.55, 'rgba(255,190,170,0.42)'); mist.addColorStop(1, 'rgba(255,190,170,0)');
         g.fillStyle = mist; g.fillRect(0, h * base - 10, w, 120);
       }
     });
     const warm = g.createRadialGradient(sx, horizon, 0, sx, horizon, 1800);   // hills facing the sun warm up
-    warm.addColorStop(0, 'rgba(255,170,90,0.3)'); warm.addColorStop(1, 'rgba(255,170,90,0)');
+    warm.addColorStop(0, 'rgba(255,150,70,0.45)'); warm.addColorStop(1, 'rgba(255,170,90,0)');
     g.fillStyle = warm; g.fillRect(sx - 1800, horizon - 100, 3600, h);
   });
 
   // ---------- shared materials ----------
-  const walnut = mat(0xffffff, woodTex('#6a4226', '#2c180b'));
-  const walnutPanel = mat(0xffffff, woodTex('#5a361e', '#241308'));
-  const chestnut = mat(0xffffff, woodTex('#a67440', '#5d3a18', 2));
-  const frameWood = mat(0xffffff, woodTex('#7a5230', '#3a2210'));
+  const wood = (base, grain, rep) => { const t = woodTex(base, grain, rep); return mat(0xffffff, t, { bumpMap: t, bumpScale: 0.6, roughness: 0.7 }); };
+  const walnut = wood('#6a4226', '#2c180b');
+  const walnutPanel = wood('#5a361e', '#241308');
+  const chestnut = wood('#a67440', '#5d3a18', 2);
+  const frameWood = wood('#7a5230', '#3a2210');
   const iron = mat(0x1f1d1b, null, { metalness: 0.7, roughness: 0.45 });
   const brass = mat(0xb8913f, null, { metalness: 0.8, roughness: 0.35 });
   const terracotta = mat(0xb9623a);
@@ -398,27 +499,32 @@ export function buildScene(scene, renderer) {
   // Bevelled panes use real transmission, so the view outside bends at the bevels.
   const glass = new THREE.MeshPhysicalMaterial({ color: 0xffffff, transmission: 1, roughness: 0.02, ior: 1.52, thickness: 0.06, specularIntensity: 1 });
 
-  // ---------- sunrise lighting ----------
-  scene.background = new THREE.Color(0x10141f);
-  scene.add(new THREE.HemisphereLight(0x9db2e8, 0x6b4a34, 0.5));     // cool dawn sky, warm bounce off the floor
+  // ---------- lighting: the first minutes of sunrise ----------
+  // The room is still dark and every lamp is off. The only real light is the
+  // sun, almost level with the horizon, reaching in through the east windows.
+  scene.background = new THREE.Color(0x090b12);
+  scene.add(new THREE.HemisphereLight(0x7f93cc, 0x3c2a20, 0.1));     // what little the sky gives
 
-  const sun = new THREE.DirectionalLight(0xffa45c, 6);
-  sun.target.position.set(0, 1.1, 0);
+  const sun = new THREE.DirectionalLight(0xff8436, 11);
+  sun.target.position.set(0, 1.3, 0);
   sun.position.copy(sunDir).multiplyScalar(8).add(sun.target.position);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.mapSize.set(4096, 4096);
   sun.shadow.bias = -0.0005;
-  sun.shadow.normalBias = 0.02;
-  sun.shadow.radius = 2.5;
-  Object.assign(sun.shadow.camera, { left: -2.5, right: 2.5, top: 2.3, bottom: -2.3, near: 0.5, far: 16 });
+  sun.shadow.normalBias = 0.015;
+  sun.shadow.radius = 2;
+  const sunBox = { left: -2.4, right: 2.4, top: 1.7, bottom: -1.7, near: 0.5, far: 16 };
+  Object.assign(sun.shadow.camera, sunBox);
   scene.add(sun, sun.target);
 
-  // light bounced off the sunlit bed and floor back into the room
-  const bounce = new THREE.PointLight(0xffb98a, 1.6, 6, 2);
-  bounce.position.set(0.5, 0.9, 0.2);
-  scene.add(bounce);
+  // what the sunlit patches throw back: off the west wall, and off the bed
+  for (const [x, y, z, power] of [[0.3, 1.25, 0.95, 1.5], [0.9, 0.95, -0.3, 0.5]]) {
+    const bounce = new THREE.PointLight(0xff9558, power, 5, 2);
+    bounce.position.set(x, y, z);
+    scene.add(bounce);
+  }
 
-  // A soft procedural dawn for image-based fill and for reflections in glass, glaze and brass.
+  // A dim procedural dawn for image-based fill and for reflections in glass, glaze and brass.
   {
     const pmrem = new THREE.PMREMGenerator(renderer), env = new THREE.Scene();
     env.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.ShaderMaterial({
@@ -427,26 +533,26 @@ export function buildScene(scene, renderer) {
       vertexShader: 'varying vec3 d; void main(){ d = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }',
       fragmentShader: `varying vec3 d; uniform vec3 sd;
         void main(){ vec3 n = normalize(d);
-          vec3 c = mix(vec3(.50,.36,.30), vec3(.14,.20,.42), smoothstep(-.05,.6,n.y));
-          c = mix(vec3(.16,.10,.07), c, smoothstep(-.35,.0,n.y));
+          vec3 c = mix(vec3(.30,.20,.20), vec3(.06,.09,.22), smoothstep(-.05,.55,n.y));
+          c = mix(vec3(.07,.05,.04), c, smoothstep(-.35,.0,n.y));
           float s = max(dot(n, sd), 0.);
-          c += vec3(3.,1.5,.6) * pow(s, 8.) + vec3(.9,.45,.22) * pow(s, 2.);
+          c += vec3(4.,1.7,.5) * pow(s, 10.) + vec3(.8,.35,.15) * pow(s, 2.5);
           gl_FragColor = vec4(c, 1.); }`,
     })));
     scene.environment = pmrem.fromScene(env, 0.03).texture;
-    scene.environmentIntensity = 0.55;
+    scene.environmentIntensity = 0.3;
     pmrem.dispose();
   }
 
   // ---------- room shell ----------
-  const floor = add(new THREE.PlaneGeometry(W, D), mat(0xffffff, floorTex, { roughness: 0.7 }), 0, 0, 0);
+  const floor = add(new THREE.PlaneGeometry(W, D), mat(0xffffff, floorTex, { roughness: 0.62, bumpMap: floorBump, bumpScale: 1.6 }), 0, 0, 0);
   floor.rotation.x = -Math.PI / 2;
   floor.castShadow = false;
   box(W + 0.24, 0.3, D + 0.24, mat(0x241f1c), 0, -0.152, 0).castShadow = false;   // the slab the room stands on
 
   // Walls and ceiling are single inward-facing sheets: they vanish when seen from
   // behind, yet still block the sun, so light only enters through the windows.
-  const wallMat = mat(0xffffff, stuccoTex, { roughness: 1, shadowSide: THREE.DoubleSide });
+  const wallMat = mat(0xffffff, stuccoTex, { roughness: 1, shadowSide: THREE.DoubleSide, bumpMap: stuccoTex, bumpScale: 1.2 });
   function wall(width, openings, x, z, rotY) {
     const s = new THREE.Shape();
     s.moveTo(-width / 2, 0); s.lineTo(width / 2, 0); s.lineTo(width / 2, H); s.lineTo(-width / 2, H); s.closePath();
@@ -481,16 +587,16 @@ export function buildScene(scene, renderer) {
     const eye = 1.4, R = 20, tall = 14, y0 = eye - tall * 0.45;       // horizon at eye level
     const pano = new THREE.Mesh(new THREE.CylinderGeometry(R, R, tall, 96, 1, true),
       new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, ...throughWindows }));
-    pano.material.color.setScalar(1.3);                               // a little over white, so the horizon blooms
+    pano.material.color.setScalar(0.7);                               // dimmed: the land is still in shadow
     pano.position.y = y0 + tall / 2;
     pano.renderOrder = -1;
-    const ground = new THREE.Mesh(new THREE.CircleGeometry(R, 64), new THREE.MeshBasicMaterial({ color: 0x617639, ...throughWindows }));
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(R, 64), new THREE.MeshBasicMaterial({ color: 0x1a2212, ...throughWindows }));
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = y0;
     ground.renderOrder = -1;
     const flat2 = Math.hypot(sunDir.x, sunDir.z);
     const disc = new THREE.Mesh(new THREE.CircleGeometry(0.42, 40), new THREE.MeshBasicMaterial({ ...throughWindows }));
-    disc.material.color.setRGB(14, 9, 3.5);                           // far over white: the sun itself
+    disc.material.color.setRGB(18, 8, 2.5);                           // far over white: the sun itself
     disc.position.set(0, eye, 0).addScaledVector(sunDir, (R - 1) / flat2);
     disc.lookAt(0, eye, 0);
     disc.renderOrder = -1;
@@ -584,34 +690,6 @@ export function buildScene(scene, renderer) {
   for (const [a, b, hem] of eastWindows) windowUnit((b - a) * S, DEEP, X((a + b) / 2), -D / 2, 0, linen, hem);
   windowUnit(350 * S, 0.12, W / 2, Z(595), -Math.PI / 2, plaid, 0.62);         // south, behind the pillow
 
-  // Shafts of sunlight hanging in the air, one per east window.
-  {
-    const reach = new THREE.Vector3().copy(sunDir).multiplyScalar(D / sunDir.z);   // wall-to-wall along the light
-    const shaftMat = new THREE.MeshBasicMaterial({
-      vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-    shaftMat.color.setRGB(0.075, 0.042, 0.02);
-    for (const [a, b] of eastWindows) {
-      const x0 = X(a) + 0.07, x1 = X(b) - 0.07, xm = (x0 + x1) / 2, ym = (Y0 + Y1) / 2, z = -D / 2 + 0.01;
-      const quads = [                                       // four sides plus two sheets through the middle
-        [[x0, Y0], [x1, Y0]], [[x0, Y1], [x1, Y1]], [[x0, Y0], [x0, Y1]], [[x1, Y0], [x1, Y1]],
-        [[xm, Y0], [xm, Y1]], [[x0, ym], [x1, ym]],
-      ];
-      const pos = [], col = [];
-      for (const [[ax, ay], [bx, by]] of quads) {
-        const n0 = [ax, ay, z], n1 = [bx, by, z];
-        const f0 = [ax + reach.x, ay + reach.y, z + reach.z], f1 = [bx + reach.x, by + reach.y, z + reach.z];
-        pos.push(...n0, ...n1, ...f1, ...n0, ...f1, ...f0);
-        col.push(1, 1, 1, 1, 1, 1, 0.15, 0.15, 0.15, 1, 1, 1, 0.15, 0.15, 0.15, 0.15, 0.15, 0.15);   // fades with distance
-      }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-      const shaft = new THREE.Mesh(geo, shaftMat);
-      scene.add(shaft);
-      hideFromAO.push(shaft);
-    }
-  }
-
   // ---------- large majolica vase of flowers on the deep sill above the bed ----------
   {
     const g = group(X(1105) + 0.1, Y0, -D / 2 - 0.2);
@@ -672,34 +750,94 @@ export function buildScene(scene, renderer) {
     }
     slab(w - 0.04, 0.14, d - 0.04, 0.08, [walnut, walnut], cx, 0.2, cz);                              // wooden base
     slab(w, 0.2, d, 0.12, [cream, mat(0xffffff, stitchTex)], cx, 0.34, cz);                           // mattress
-    slab(w + 0.02, 0.05, d + 0.02, 0.13, [mat(0xffffff, quiltTex), mat(0xf6efdf)], cx, 0.54, cz);     // quilt
-    const top = 0.59;
-    const pillow = add(new THREE.SphereGeometry(1, 48, 32), mat(0xffffff, plaidTex('#7d2f25', '#3f1712', '#e6c487', 5, 4)), X(1540), top + 0.07, Z(560));
-    pillow.scale.set(0.24, 0.085, 0.4);
+    const top = 0.54;
 
-    // a chunky knitted throw across the foot of the bed, spilling over the side
-    const knit = mat(0xffffff, knitTex('#c98a35', '#e0a850', '#9a6420', 6, 14));
-    const knitFall = mat(0xffffff, knitTex('#c98a35', '#e0a850', '#9a6420', 6, 4));
-    box(0.52, 0.03, d + 0.05, knit, x0 + 0.42, top + 0.012, cz);
-    box(0.52, 0.34, 0.03, knitFall, x0 + 0.42, top - 0.14, z1 + 0.026);
+    // The duvet: a thick quilted comforter laid over the bed, falling over the
+    // foot and the open side, turned back where it meets the pillow.
+    // (a, b) run along the cloth: a from the pillow towards the foot, b from the wall outwards.
+    const headGap = 0.55, bendR = 0.07, hang = 0.3;
+    const flatA = x1 - headGap - x0, flatB = d;
+    const La = flatA + bendR * Math.PI / 2 + hang, Lb = flatB + bendR * Math.PI / 2 + hang;
+    const ca = flatA / 4, cb = flatB / 3;                           // size of one quilted pocket
+    const smooth = (e0, e1, v) => { const t = Math.min(1, Math.max(0, (v - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+    const bend = (s, flat) => {                                     // -> [distance travelled flat, drop below the top]
+      if (s <= flat) return [s, 0];
+      const th = (s - flat) / bendR;
+      return th < Math.PI / 2 ? [flat + bendR * Math.sin(th), bendR * (1 - Math.cos(th))]
+                              : [flat + bendR, bendR + (s - flat - bendR * Math.PI / 2)];
+    };
+    const under = (a, b) => {                                       // the surface the duvet rests on
+      const ea = a - flatA, eb = b - flatB;
+      if (ea > 0 && eb > 0) {                                       // the free corner: sweep the fold round it
+        const r = Math.hypot(ea, eb), [h, drop] = bend(flatA + r, flatA), k = (h - flatA) / r;
+        return new THREE.Vector3(x0 - ea * k, top - drop, z1 + eb * k);
+      }
+      const [ha, da] = bend(a, flatA), [hb, db] = bend(b, flatB);
+      return new THREE.Vector3(x1 - headGap - ha, top - Math.max(da, db), z0 + hb);
+    };
+    const loft = (a, b) => {                                        // how thick the duvet is here
+      const q = Math.pow(Math.abs(Math.sin(Math.PI * a / ca) * Math.sin(Math.PI * b / cb)), 0.4);
+      let t = 0.022 + 0.075 * q;
+      t += (0.5 + 0.5 * q) * (0.012 * Math.sin(a * 5.1 + 2) * Math.sin(b * 4.3 + 1)       // lazy rumples
+        + 0.006 * Math.sin(a * 23 + b * 7 + 1.3) * Math.sin(b * 17 - a * 5)                // creases
+        + 0.003 * Math.sin(a * 41 + b * 29));
+      t += 0.05 * Math.exp(-(((a - 0.11) / 0.09) ** 2));                                   // the turned-back roll
+      t *= 0.35 + 0.65 * smooth(0, 0.05, a);
+      return t * (1 - 0.55 * smooth(La - 0.1, La, a)) * (1 - 0.55 * smooth(Lb - 0.1, Lb, b));   // thins to a hem
+    };
+    const NA = 96, NB = 84, e = 0.004, pos = [], uv = [], idx = [];
+    for (let j = 0; j <= NB; j++) for (let i = 0; i <= NA; i++) {
+      const a = La * i / NA, b = Lb * j / NB, p = under(a, b);
+      const n = under(a + e, b).sub(p).cross(under(a, b + e).sub(p)).normalize();
+      p.addScaledVector(n, loft(a, b));
+      pos.push(p.x, p.y, p.z);
+      uv.push(a / ca, b / cb);
+    }
+    for (let j = 0; j < NB; j++) for (let i = 0; i < NA; i++) {
+      const v00 = j * (NA + 1) + i, v10 = v00 + 1, v01 = v00 + NA + 1, v11 = v01 + 1;
+      idx.push(v00, v10, v01, v10, v11, v01);
+    }
+    const duvetGeo = new THREE.BufferGeometry();
+    duvetGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    duvetGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    duvetGeo.setIndex(idx);
+    duvetGeo.computeVertexNormals();
+    const duvetMat = new THREE.MeshPhysicalMaterial({ map: duvetTex, roughness: 0.95, side: THREE.DoubleSide,
+      sheen: 1, sheenRoughness: 0.7, sheenColor: new THREE.Color(0xfff0dc) });
+    const duvet = add(duvetGeo, duvetMat, 0, 0, 0);
+    fluff([duvet], { length: 0.005, layers: 5, strand: 0.0017, shade: 0.86, uvSize: [ca, cb] });        // brushed cotton
+    const duvetTop = (x, z) => top + loft(x1 - headGap - x, z - z0);
 
-    // stuffed pink hippo beside the pillow, legs in red-and-orange stripes
+    // a plump pillow in plaid flannel
+    const pillow = add(pillowGeo(0.5, 0.76, 0.18), mat(0xffffff, plaidTex('#7d2f25', '#3f1712', '#e6c487', 3, 5)), X(1540), top + 0.08, Z(560));
+    fluff([pillow], { length: 0.006, layers: 7, strand: 0.0018, uvSize: [0.5, 0.76] });
+
+    // the stuffed pink hippo, plush all over, legs in red-and-orange stripes
     const pink = mat(0xf2a0b8), pale = mat(0xf8c3d2), dark = mat(0x2a1a20), socks = mat(0xffffff, stripeTex);
-    const hippo = group(X(1385), top, Z(440), -0.65);
-    ball(1, pink, 0, 0.12, -0.08, hippo, 0.13, 0.115, 0.19);        // body
-    ball(1, pink, 0, 0.14, 0.15, hippo, 0.1, 0.095, 0.12);          // head
-    ball(1, pale, 0, 0.11, 0.26, hippo, 0.115, 0.085, 0.1);         // snout
-    ball(0.02, pink, 0, 0.14, -0.27, hippo);                        // tail
+    const hx = X(1362), hz = Z(440);
+    const hippo = group(hx, duvetTop(hx, hz) - 0.012, hz, -0.65);
+    const plush = [];
+    const part = (r, material, x, y, z, sx = 1, sy = 1, sz = 1) => {
+      const m = add(new THREE.SphereGeometry(r, 20, 14), material, x, y, z, hippo);
+      m.scale.set(sx, sy, sz);
+      plush.push(m);
+    };
+    part(1, pink, 0, 0.12, -0.08, 0.13, 0.115, 0.19);               // body
+    part(1, pink, 0, 0.14, 0.15, 0.1, 0.095, 0.12);                 // head
+    part(1, pale, 0, 0.11, 0.26, 0.115, 0.085, 0.1);                // snout
+    part(0.02, pink, 0, 0.14, -0.27);                               // tail
     for (const sx of [-1, 1]) {
-      ball(0.028, pink, sx * 0.07, 0.23, 0.1, hippo);               // ears
-      ball(0.024, cream, sx * 0.045, 0.225, 0.19, hippo);           // eyes sit on top of the head
-      ball(0.012, dark, sx * 0.045, 0.232, 0.208, hippo);
-      ball(0.012, dark, sx * 0.04, 0.16, 0.345, hippo);             // nostrils
+      part(0.028, pink, sx * 0.07, 0.23, 0.1);                      // ears
+      ball(0.026, cream, sx * 0.045, 0.232, 0.19, hippo);           // eyes sit on top of the head
+      ball(0.013, dark, sx * 0.045, 0.242, 0.21, hippo);
+      ball(0.015, dark, sx * 0.04, 0.165, 0.352, hippo);            // nostrils
       for (const [z, splay] of [[0.1, 0.5], [-0.2, 2.4]]) {         // four striped legs, lying flat
-        const leg = add(new THREE.CapsuleGeometry(0.04, 0.1, 12, 24), socks, sx * 0.15, 0.042, z, hippo);
+        const leg = add(new THREE.CapsuleGeometry(0.04, 0.1, 8, 16), socks, sx * 0.15, 0.042, z, hippo);
         leg.rotation.set(Math.PI / 2, 0, -sx * splay);
+        plush.push(leg);
       }
     }
+    fluff(plush, { length: 0.012, layers: 12, strand: 0.0024, droop: 0.1 });
   }
 
   // ---------- pictures ----------
@@ -713,26 +851,19 @@ export function buildScene(scene, renderer) {
     picture(herbTex(kind), 0.24, 0.32, 0.022, frameDark, group(X(1010 + i * 120), 1.5, D / 2 - 0.004, Math.PI)));
   picture(paintingTex, 0.66, 0.44, 0.04, frameGilt, group(-W / 2 + 0.004, 1.6, Z(910), Math.PI / 2));  // hills, over the sofa
 
-  // ---------- lamps (both lit: it is early) ----------
+  // ---------- lamps (switched off: the sun is doing the work) ----------
   function shade(rTop, rBottom, h, y, parent, map) {
     const m = add(new THREE.CylinderGeometry(rTop, rBottom, h, 48, 1, true),
-      new THREE.MeshStandardMaterial({ color: 0xfff1c4, map, emissive: 0xffb866, emissiveMap: map, emissiveIntensity: 1.5, side: THREE.DoubleSide }),
+      new THREE.MeshStandardMaterial({ color: 0xfff1c4, map, bumpMap: map, bumpScale: 0.6, roughness: 0.9, side: THREE.DoubleSide }),
       0, y, 0, parent);
-    m.castShadow = false;
     return m;
   }
-  const lampLight = (x, y, z, power) => {
-    const l = new THREE.PointLight(0xffac5e, power, 5, 2);
-    l.position.set(x, y, z);
-    scene.add(l);
-  };
   { // wrought-iron floor lamp with a woven shade, between the desk and the bed
     const g = group(X(735), 0, Z(440));
     cyl(0.04, 0.14, 0.05, iron, 0, 0.025, 0, g);
     cyl(0.014, 0.014, 1.42, iron, 0, 0.75, 0, g);
     for (const y of [0.12, 0.7, 1.3]) ball(0.03, iron, 0, y, 0, g, 1, 0.7, 1);
     shade(0.11, 0.22, 0.5, 1.62, g, wovenTex(8, 3));
-    lampLight(X(735), 1.5, Z(440), 2.2);
   }
 
   // ---------- rustic chests: walnut, raised drawer fronts, iron ring pulls ----------
@@ -762,10 +893,8 @@ export function buildScene(scene, renderer) {
     const g = group(x, y, z);
     cyl(0.04, 0.05, 0.012, brass, 0, 0.006, 0, g);
     cyl(0.012, 0.02, 0.03, brass, 0, 0.027, 0, g);
-    cyl(0.017, 0.017, tall, mat(0xf3e7cf, null, { emissive: 0xffa040, emissiveIntensity: 0.25 }), 0, 0.042 + tall / 2, 0, g);
-    const flame = ball(1, new THREE.MeshBasicMaterial(), 0, 0.042 + tall + 0.022, 0, g, 0.007, 0.018, 0.007);
-    flame.material.color.setRGB(9, 4, 1);
-    flame.castShadow = false;
+    cyl(0.017, 0.017, tall, mat(0xbfae8c, null, { roughness: 0.6 }), 0, 0.042 + tall / 2, 0, g);
+    cyl(0.0015, 0.0015, 0.012, mat(0x1a1410), 0, 0.042 + tall + 0.006, 0, g);     // wick, unlit
   }
   { // "drawer" against the west wall, drawers facing east into the room
     const x0 = X(880), x1 = X(1380), z0 = Z(1050), z1 = D / 2 - 0.03, top = 0.85;
@@ -793,7 +922,6 @@ export function buildScene(scene, renderer) {
     cyl(0.02, 0.03, 0.06, brass, 0, 0.2, 0, lamp);
     cyl(0.05, 0.06, 0.012, brass, 0, 0.006, 0, lamp);
     shade(0.07, 0.16, 0.24, 0.34, lamp, linenTex('#f6ecd2', '#c4ad7c', 6, 2));
-    lampLight(X(1590), h + 0.3, Z(1000), 1.3);
   }
 
   // ---------- plants ----------
@@ -857,10 +985,18 @@ export function buildScene(scene, renderer) {
     for (const s of [-1, 1]) box(0.15, 0.008, 0.21, cream, s * 0.076, 0.004, 0, note);
     cyl(0.004, 0.004, 0.17, mat(0xd8a020), 0.03, 0.013, 0.02, note).rotation.set(Math.PI / 2, 0, 0.5);
     const cup = group(X(455), surface, Z(520));
-    cyl(0.06, 0.045, 0.01, cream, 0, 0.005, 0, cup);
-    cyl(0.034, 0.024, 0.05, cream, 0, 0.035, 0, cup);
-    cyl(0.029, 0.029, 0.004, mat(0x2a1608, null, { roughness: 0.3 }), 0, 0.058, 0, cup);
-    add(new THREE.TorusGeometry(0.017, 0.005, 8, 20), cream, 0.04, 0.036, 0, cup);
+    const china = mat(0xf7f2e6, null, { roughness: 0.25, side: THREE.DoubleSide });
+    const turn = pts => new THREE.LatheGeometry(pts.map(([r, y]) => new THREE.Vector2(r, y)), 40);
+    add(turn([[0, 0], [0.03, 0], [0.06, 0.012], [0.062, 0.014], [0.03, 0.006], [0, 0.006]]), china, 0, 0, 0, cup);          // saucer
+    // a hollow cup with a real wall, so the coffee sits inside it, below the rim
+    add(turn([[0, 0.006], [0.022, 0.006], [0.034, 0.058], [0.031, 0.058], [0.02, 0.012], [0, 0.012]]), china, 0, 0, 0, cup);
+    const coffee = add(new THREE.CircleGeometry(0.0282, 40), mat(0x1c0f07, null, { roughness: 0.12 }), 0, 0.048, 0, cup);
+    coffee.rotation.x = -Math.PI / 2;
+    coffee.castShadow = false;
+    const crema = add(new THREE.RingGeometry(0.023, 0.0282, 40), mat(0x9a6a3a, null, { roughness: 0.4 }), 0, 0.0484, 0, cup);
+    crema.rotation.x = -Math.PI / 2;
+    crema.castShadow = false;
+    add(new THREE.TorusGeometry(0.015, 0.004, 8, 20), china, 0.041, 0.034, 0, cup);
   }
 
   // ---------- kilim rug, tucked under the bed, sofa and dresser ----------
@@ -872,24 +1008,41 @@ export function buildScene(scene, renderer) {
     rug.castShadow = false;
   }
 
-  // ---------- cozy sofa: a big round lounger against the north wall ----------
+  // ---------- cozy sofa: a big round boucle lounger against the north wall ----------
+  // Everything on it rests on it: two cushions lean on the bolster with a gap
+  // between them, and a folded throw lies on the open side of the seat.
   {
     const g = group(X(270), 0, Z(910));
-    const fabric = mat(0xffffff, hatchTex), soft = mat(0xffffff, linenTex('#f1dfba', '#b39a68', 4, 4));
-    const base = add(new THREE.SphereGeometry(1, 48, 32), fabric, 0, 0.24, 0, g);
-    base.scale.set(0.58, 0.26, 0.58);
-    ball(1, soft, 0.06, 0.4, 0, g, 0.44, 0.13, 0.44);                               // seat cushion
-    const back = group(0, 0.5, 0, 1.335, g);                                         // bolster wrapping the wall side
-    const bolster = add(new THREE.TorusGeometry(0.4, 0.17, 20, 56, Math.PI * 1.15), fabric, 0, 0, 0, back);
+    const boucle = mat(0xdcc7a0), seatY = 0.38, pile = 0.016;
+    const profile = [[0, 0], [0.5, 0], [0.56, 0.03], [0.58, 0.12], [0.58, 0.26], [0.55, 0.34], [0.48, seatY], [0.3, seatY + 0.012], [0, seatY + 0.015]]
+      .map(([r, y]) => new THREE.Vector2(r, y));
+    const base = add(new THREE.LatheGeometry(profile, 64), boucle, 0, 0, 0, g);
+    // bolster round the wall side: a fat arc sitting on the seat
+    const R = 0.43, tube = 0.15, arc = Math.PI * 1.15;
+    const back = group(0, seatY + tube - 0.02, 0, Math.PI - arc / 2, g);
+    const bolster = add(new THREE.TorusGeometry(R, tube, 24, 64, arc), boucle, 0, 0, 0, back);
     bolster.rotation.x = -Math.PI / 2;
-    bolster.scale.z = 0.95;
-    for (const a of [0, Math.PI * 1.15]) ball(0.17, fabric, Math.cos(a) * 0.4, 0, -Math.sin(a) * 0.4, back, 1, 0.95, 1);
-    const p1 = ball(1, mat(0xffffff, plaidTex('#b5562f', '#7d2f25', '#f1e3c4', 3)), -0.12, 0.62, -0.2, g, 0.17, 0.17, 0.075);
-    p1.rotation.set(-0.25, 0.9, 0);
-    const p2 = ball(1, mat(0xffffff, linenTex('#7c8a47', '#4c5a26', 3, 3)), -0.14, 0.6, 0.2, g, 0.16, 0.16, 0.07);
-    p2.rotation.set(0.25, -0.9, 0);
-    const throwRug = ball(1, mat(0xffffff, plaidTex('#f1e3c4', '#c98a3a', '#7d2f25', 4)), 0.3, 0.44, 0.28, g, 0.2, 0.05, 0.3);
-    throwRug.rotation.set(0.25, 0.5, -0.45);
+    const caps = [0, arc].map(a => ball(tube, boucle, Math.cos(a) * R, 0, -Math.sin(a) * R, back));
+    fluff([base], { length: pile, layers: 12, strand: 0.005, curl: 0.5, uvSize: [Math.PI * 1.1, 1.25] });
+    fluff([bolster], { length: pile, layers: 12, strand: 0.005, curl: 0.5, uvSize: [arc * R, Math.PI * 2 * tube] });
+    fluff(caps, { length: pile, layers: 12, strand: 0.005, curl: 0.5 });
+
+    // two cushions, each leaning back against the bolster and facing the middle of the seat
+    const up = new THREE.Vector3(0, 1, 0), lean = 0.21, size = 0.26, thick = 0.11;
+    const cushions = [[1, mat(0xffffff, plaidTex('#b5562f', '#7d2f25', '#f1e3c4', 2))], [-1, mat(0xffffff, linenTex('#7c8a47', '#4c5a26', 3, 3))]];
+    for (const [side, material] of cushions) {
+      const a = side * Math.PI / 3, out = new THREE.Vector3(-Math.cos(a), 0, Math.sin(a));   // from the seat centre to the cushion
+      const rise = up.clone().multiplyScalar(Math.cos(lean)).addScaledVector(out, Math.sin(lean));
+      const face = out.clone().multiplyScalar(-Math.cos(lean)).addScaledVector(up, Math.sin(lean));
+      const c = add(pillowGeo(size, size, thick), material, 0, 0, 0, g);
+      c.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(face.clone().cross(rise), face, rise));
+      c.position.copy(out).multiplyScalar(0.15).addScaledVector(rise, size / 2).add(new THREE.Vector3(0, seatY + pile * 0.7, 0));
+      fluff([c], { length: 0.006, layers: 7, strand: 0.0018, uvSize: [size, size] });
+    }
+
+    // a knitted throw, folded in three
+    const knit = mat(0xffffff, knitTex('#c98a35', '#e0a850', '#9a6420', 8, 6));
+    for (let i = 0; i < 3; i++) box(0.3 - i * 0.012, 0.024, 0.22 - i * 0.01, knit, 0.275 + i * 0.004, seatY + pile * 0.6 + 0.012 + i * 0.024, 0, g);
   }
 
   // ---------- wicker basket of spare blankets, by the sofa ----------
@@ -958,5 +1111,36 @@ export function buildScene(scene, renderer) {
   scene.updateMatrixWorld(true);
   scene.traverse(o => { o.matrixAutoUpdate = false; });
 
-  return { hideFromAO };
+  // The beams of light in the air are worked out in the pipeline by walking each
+  // view ray through the room and asking, step by step, "can this point see the
+  // sun?". That needs a depth picture of the room taken from the sun: render it once.
+  const sunCam = new THREE.OrthographicCamera(sunBox.left, sunBox.right, sunBox.top, sunBox.bottom, sunBox.near, sunBox.far);
+  sunCam.position.copy(sun.position);
+  sunCam.lookAt(sun.target.position);
+  sunCam.updateMatrixWorld(true);
+  const sunDepth = new THREE.WebGLRenderTarget(1024, 1024, { depthTexture: new THREE.DepthTexture(1024, 1024) });
+  {
+    const was = hideFromAO.map(o => o.visible), bg = scene.background;
+    hideFromAO.forEach(o => { o.visible = false; });           // glass and the view outside do not block light
+    scene.overrideMaterial = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+    scene.background = null;
+    renderer.setRenderTarget(sunDepth);
+    renderer.clear();
+    renderer.render(scene, sunCam);
+    renderer.setRenderTarget(null);
+    scene.overrideMaterial = null;
+    scene.background = bg;
+    hideFromAO.forEach((o, i) => { o.visible = was[i]; });
+  }
+  const volumetric = {
+    sunDepth: sunDepth.depthTexture,
+    sunMatrix: new THREE.Matrix4().multiplyMatrices(sunCam.projectionMatrix, sunCam.matrixWorldInverse),
+    sunDir,
+    color: new THREE.Color(1.0, 0.46, 0.17),
+    density: 0.22,
+    boxMin: new THREE.Vector3(-W / 2, 0, -D / 2 - DEEP),       // the room, including the deep window reveals
+    boxMax: new THREE.Vector3(W / 2, H, D / 2),
+  };
+
+  return { hideFromAO, volumetric };
 }
