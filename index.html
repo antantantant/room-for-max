@@ -6,9 +6,11 @@
 <title>Apartment Room for Max</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #dfe6ec; font-family: system-ui, sans-serif; }
-  #label { position: fixed; left: 16px; top: 12px; color: #333; pointer-events: none; }
+  #label { position: fixed; left: 16px; top: 12px; color: #333; }
   #label h1 { margin: 0; font-size: 18px; font-weight: 600; }
-  #label p { margin: 2px 0 0; font-size: 13px; opacity: .7; }
+  #label p { margin: 2px 0 8px; font-size: 13px; opacity: .7; }
+  button { font: inherit; font-size: 13px; padding: 5px 10px; margin-right: 4px; border: 1px solid #9aa5b1; border-radius: 6px; background: #fff; cursor: pointer; }
+  button:hover { background: #eef2f6; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -18,12 +20,22 @@
 </script>
 </head>
 <body>
-<div id="label"><h1>Apartment Room for Max</h1><p>Drag to rotate · scroll to zoom</p></div>
+<div id="label">
+  <h1>Apartment Room for Max</h1>
+  <p>Drag to rotate · scroll to zoom</p>
+  <button data-view="overview">Overview</button><button data-view="sketch">Sketch view</button><button data-view="plan">Floor plan</button>
+</div>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const W = 5, D = 4, H = 2.6; // room size in metres
+// Every position below is given in pixels measured off the floor plan in the
+// sketch (room outline: x 30..1690, y 300..1340) and converted to metres by
+// assuming the bed is 2.0 m long (790 px). That makes the room 4.20 m x 2.63 m.
+const S = 2.0 / 790;
+const W = 1660 * S, D = 1040 * S, H = 2.5;
+const X = px => (px - 30) * S - W / 2;   // plan x  -> world x (left wall .. right wall)
+const Z = py => (py - 300) * S - D / 2;  // plan y  -> world z (window wall .. door wall)
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -34,19 +46,30 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xdfe6ec);
-
-const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
-camera.position.set(-4.2, 4, 6);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 100);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0.2, 0.8, -0.2);
 controls.enableDamping = true;
-controls.maxPolarAngle = Math.PI / 2 - 0.05;
-controls.minDistance = 2;
+controls.maxPolarAngle = Math.PI / 2 - 0.03;
+controls.minDistance = 0.5;
 controls.maxDistance = 14;
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0xb0a090, 1.6));
-const sun = new THREE.DirectionalLight(0xfff2dd, 1.8);
-sun.position.set(-3, 6, 4);
+const views = {
+  overview: [[-3.2, 3.6, 4.4], [0.2, 0.6, -0.1]],
+  sketch:   [[X(440), 1.5, Z(1325)], [X(930), 0.75, Z(600)]],  // standing by the door, as drawn
+  plan:     [[0, 6.2, 0.001], [0, 0, 0]],
+};
+function setView(name) {
+  const [p, t] = views[name];
+  camera.position.set(...p);
+  controls.target.set(...t);
+  controls.update();
+}
+document.querySelectorAll('button').forEach(b => b.onclick = () => setView(b.dataset.view));
+setView('overview');
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xb0a090, 1.7));
+const sun = new THREE.DirectionalLight(0xfff2dd, 1.6);
+sun.position.set(-2, 6, 3);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -4, right: 4, top: 4, bottom: -4 });
@@ -62,10 +85,34 @@ function add(geo, material, x, y, z, parent = scene) {
   parent.add(m);
   return m;
 }
-const box = (w, h, d, material, x, y, z, parent) =>
-  add(new THREE.BoxGeometry(w, h, d), material, x, y, z, parent);
+const box = (w, h, d, material, x, y, z, parent) => add(new THREE.BoxGeometry(w, h, d), material, x, y, z, parent);
+const ball = (r, material, x, y, z, parent, sx = 1, sy = 1, sz = 1) => {
+  const m = add(new THREE.SphereGeometry(r, 24, 16), material, x, y, z, parent);
+  m.scale.set(sx, sy, sz);
+  return m;
+};
+const group = (x, y, z, rotY = 0) => {
+  const g = new THREE.Group();
+  g.position.set(x, y, z);
+  g.rotation.y = rotY;
+  scene.add(g);
+  return g;
+};
 
-function canvasTexture(size, draw, repeatX = 1, repeatY = 1) {
+// Rounded-corner slab lying flat; (x, y, z) is the centre of its underside.
+// mats = [top/bottom material, side material]
+function slab(w, h, d, r, mats, x, y, z) {
+  const s = new THREE.Shape(), a = -w / 2, b = -d / 2;
+  s.moveTo(a + r, b); s.lineTo(a + w - r, b); s.quadraticCurveTo(a + w, b, a + w, b + r);
+  s.lineTo(a + w, b + d - r); s.quadraticCurveTo(a + w, b + d, a + w - r, b + d);
+  s.lineTo(a + r, b + d); s.quadraticCurveTo(a, b + d, a, b + d - r);
+  s.lineTo(a, b + r); s.quadraticCurveTo(a, b, a + r, b);
+  const geo = new THREE.ExtrudeGeometry(s, { depth: h, bevelEnabled: false, curveSegments: 8 });
+  geo.rotateX(-Math.PI / 2);
+  return add(geo, mats, x, y, z);
+}
+
+function canvasTexture(size, draw, repeatX = 1, repeatY = repeatX) {
   const c = document.createElement('canvas');
   c.width = c.height = size;
   draw(c.getContext('2d'), size);
@@ -73,72 +120,84 @@ function canvasTexture(size, draw, repeatX = 1, repeatY = 1) {
   t.colorSpace = THREE.SRGBColorSpace;
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.repeat.set(repeatX, repeatY);
+  t.anisotropy = 8;
   return t;
 }
 
 // ---------- textures ----------
-const frogTex = canvasTexture(256, (g, s) => {
-  g.fillStyle = '#eef5e4'; g.fillRect(0, 0, s, s);
-  g.strokeStyle = '#c9d8bb'; g.lineWidth = 2;
-  for (let i = -s; i <= s * 2; i += s / 2) {
-    g.beginPath(); g.moveTo(i, 0); g.lineTo(i + s, s); g.stroke();
-    g.beginPath(); g.moveTo(i, 0); g.lineTo(i - s, s); g.stroke();
+// Quilt: stitched squares with little hippo faces. One tile = 0.4 m.
+const quiltTex = canvasTexture(256, (g, s) => {
+  g.fillStyle = '#f3efe4'; g.fillRect(0, 0, s, s);
+  g.strokeStyle = '#cfc8b6'; g.lineWidth = 2; g.setLineDash([6, 5]);
+  for (const p of [0, s / 2]) {
+    g.beginPath(); g.moveTo(p + 1, 0); g.lineTo(p + 1, s); g.stroke();
+    g.beginPath(); g.moveTo(0, p + 1); g.lineTo(s, p + 1); g.stroke();
   }
-  const frog = (x, y) => {
-    g.fillStyle = '#6fb04a';
-    g.beginPath(); g.ellipse(x, y, 30, 20, 0, 0, Math.PI * 2); g.fill();
-    for (const dx of [-16, 16]) {
-      g.fillStyle = '#6fb04a'; g.beginPath(); g.arc(x + dx, y - 18, 11, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#fff';    g.beginPath(); g.arc(x + dx, y - 19, 6, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#222';    g.beginPath(); g.arc(x + dx, y - 19, 3, 0, Math.PI * 2); g.fill();
+  g.setLineDash([]);
+  const hippo = (x, y) => {
+    g.fillStyle = '#8f8fb0';
+    for (const dx of [-17, 17]) { g.beginPath(); g.arc(x + dx, y - 16, 7, 0, Math.PI * 2); g.fill(); }
+    g.beginPath(); g.ellipse(x, y, 27, 19, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#2a2a3a';
+    for (const dx of [-10, 10]) {
+      g.beginPath(); g.arc(x + dx, y - 6, 3, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(x + dx * 0.6, y + 8, 2, 0, Math.PI * 2); g.fill();
     }
-    g.strokeStyle = '#2f5a1c'; g.lineWidth = 2.5;
-    g.beginPath(); g.arc(x, y - 2, 14, 0.15 * Math.PI, 0.85 * Math.PI); g.stroke();
   };
-  frog(64, 74); frog(192, 202);
-}, 3, 4);
+  hippo(64, 64); hippo(192, 192);
+}, 1 / 0.4);
 
-const checkTex = (a, b, n) => canvasTexture(128, (g, s) => {
-  const q = s / 4;
-  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
-    g.fillStyle = (i + j) % 2 ? a : b; g.fillRect(i * q, j * q, q, q);
+// Mattress edge: vertical stitching, as drawn. One tile = 0.12 m.
+const stitchTex = canvasTexture(64, (g, s) => {
+  g.fillStyle = '#f7f5ef'; g.fillRect(0, 0, s, s);
+  g.strokeStyle = '#b9b3a4'; g.lineWidth = 2;
+  for (const x of [1, s / 2]) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, s); g.stroke(); }
+  g.beginPath(); g.moveTo(0, s / 2); g.lineTo(s, s / 2); g.stroke();
+}, 1 / 0.12);
+
+const plaidTex = (base, band, line, n) => canvasTexture(128, (g, s) => {
+  g.fillStyle = base; g.fillRect(0, 0, s, s);
+  g.fillStyle = band; g.globalAlpha = 0.55;
+  g.fillRect(0, 20, s, 34); g.fillRect(20, 0, 34, s);
+  g.globalAlpha = 1; g.strokeStyle = line; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(0, 92); g.lineTo(s, 92); g.moveTo(92, 0); g.lineTo(92, s); g.stroke();
+}, n);
+
+const wovenTex = canvasTexture(128, (g, s) => {
+  g.fillStyle = '#ead9b0'; g.fillRect(0, 0, s, s);
+  g.strokeStyle = '#b89b62'; g.lineWidth = 3;
+  for (let y = 8; y < s; y += 16) { g.beginPath(); g.moveTo(0, y); g.lineTo(s, y); g.stroke(); }
+  g.lineWidth = 2;
+  for (let x = 8; x < s; x += 32) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, s); g.stroke(); }
+}, 6, 3);
+
+const hatchTex = canvasTexture(128, (g, s) => {
+  g.fillStyle = '#d99a63'; g.fillRect(0, 0, s, s);
+  g.strokeStyle = '#b97a45'; g.lineWidth = 3;
+  for (const p of [16, 80]) {
+    g.beginPath(); g.moveTo(p, 0); g.lineTo(p, s); g.moveTo(0, p); g.lineTo(s, p); g.stroke();
   }
-}, n, n);
+}, 8, 5);
 
-const posterTex = canvasTexture(512, (g, s) => {
-  g.fillStyle = '#d7141a'; g.fillRect(0, 0, s, s);
-  g.strokeStyle = '#fff'; g.lineWidth = 10; g.strokeRect(18, 18, s - 36, s - 36);
-  g.fillStyle = '#fff'; g.textAlign = 'center';
-  g.font = 'bold 250px Georgia, serif'; g.fillText('14', s / 2, 300);
-  g.font = 'bold 76px Georgia, serif';  g.fillText('ARSENAL', s / 2, 420);
+const stripeTex = canvasTexture(64, (g, s) => {
+  for (let i = 0; i < 8; i++) { g.fillStyle = i % 2 ? '#3d6fb5' : '#f4f1e8'; g.fillRect(0, i * 8, s, 8); }
 });
 
-const flowerTex = canvasTexture(512, (g, s) => {
-  g.fillStyle = '#f6efe0'; g.fillRect(0, 0, s, s);
-  g.strokeStyle = '#4c8a3a'; g.lineWidth = 7;
-  const stems = [[150, 170], [215, 110], [270, 80], [320, 130], [385, 185]];
-  for (const [x, y] of stems) { g.beginPath(); g.moveTo(256, 340); g.quadraticCurveTo(256, y + 60, x, y); g.stroke(); }
-  // long feathery leaf
-  g.lineWidth = 4;
-  for (let i = 0; i < 12; i++) {
-    const x = 300 + i * 13, y = 290 - i * 20;
-    g.beginPath(); g.moveTo(x, y); g.lineTo(x + 34, y - 6); g.moveTo(x, y); g.lineTo(x - 6, y - 34); g.stroke();
-  }
-  const colors = ['#e8647c', '#f2a23c', '#e8647c', '#b06ad0', '#f2a23c'];
-  stems.forEach(([x, y], i) => {
-    g.fillStyle = colors[i];
-    for (let k = 0; k < 6; k++) {
-      const a = k * Math.PI / 3;
-      g.beginPath(); g.arc(x + Math.cos(a) * 22, y + Math.sin(a) * 22, 19, 0, Math.PI * 2); g.fill();
-    }
-    g.fillStyle = '#ffe27a'; g.beginPath(); g.arc(x, y, 14, 0, Math.PI * 2); g.fill();
-  });
-  // striped vase
-  g.save();
-  g.beginPath(); g.moveTo(200, 320); g.quadraticCurveTo(150, 410, 205, 480); g.lineTo(307, 480);
-  g.quadraticCurveTo(362, 410, 312, 320); g.closePath(); g.clip();
-  for (let y = 320, i = 0; y < 480; y += 16, i++) { g.fillStyle = i % 2 ? '#3d6fb5' : '#ffffff'; g.fillRect(140, y, 240, 16); }
-  g.restore();
+// Poster: a number-14 shirt with ARSENAL underneath.
+const posterTex = canvasTexture(512, (g, s) => {
+  g.fillStyle = '#f4f0e6'; g.fillRect(0, 0, s, s);
+  g.fillStyle = '#d7141a';
+  g.beginPath();
+  g.moveTo(170, 40); g.quadraticCurveTo(256, 90, 342, 40);          // collar
+  g.lineTo(470, 110); g.lineTo(430, 200); g.lineTo(380, 175);       // right sleeve
+  g.lineTo(380, 390); g.lineTo(132, 390); g.lineTo(132, 175);       // body
+  g.lineTo(82, 200); g.lineTo(42, 110); g.closePath(); g.fill();    // left sleeve
+  g.fillStyle = '#fff';
+  g.beginPath(); g.moveTo(470, 110); g.lineTo(430, 200); g.lineTo(395, 182); g.lineTo(432, 90); g.fill();
+  g.beginPath(); g.moveTo(42, 110); g.lineTo(82, 200); g.lineTo(117, 182); g.lineTo(80, 90); g.fill();
+  g.textAlign = 'center';
+  g.font = 'bold 190px Georgia, serif'; g.fillText('14', s / 2, 330);
+  g.fillStyle = '#222'; g.font = 'bold 78px Georgia, serif'; g.fillText('ARSENAL', s / 2, 480);
 });
 
 // ---------- room shell ----------
@@ -152,147 +211,204 @@ const shell = new THREE.Mesh(new THREE.BoxGeometry(W, H, D), [wallMat, wallMat, 
 shell.position.y = H / 2;
 scene.add(shell);
 
-// ---------- windows (back wall) ----------
 const white = mat(0xffffff);
-function windowAt(x) {
-  const g = new THREE.Group();
-  g.position.set(x, 1.6, -D / 2 + 0.01);
-  const glass = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 1.1), new THREE.MeshBasicMaterial({ color: 0xbfe3f7 }));
-  g.add(glass);
-  box(1.1, 0.06, 0.05, white, 0, 0.55, 0, g);
-  box(1.1, 0.06, 0.05, white, 0, -0.55, 0, g);
-  box(0.06, 1.16, 0.05, white, -0.52, 0, 0, g);
-  box(0.06, 1.16, 0.05, white, 0.52, 0, 0, g);
-  box(0.04, 1.1, 0.04, white, 0, 0, 0, g);
-  box(1.0, 0.04, 0.04, white, 0, 0, 0, g);
-  scene.add(g);
-}
-[-1.4, 0.15, 1.7].forEach(windowAt);
-
-// ---------- door (front wall, by the sofa) ----------
-const door = new THREE.Group();
-door.position.set(-1.9, 1.0, D / 2 - 0.01);
-door.rotation.y = Math.PI;
-door.add(new THREE.Mesh(new THREE.PlaneGeometry(0.85, 2.0), mat(0x9a6b43)));
-add(new THREE.CircleGeometry(0.04, 20), mat(0xd9b64a), 0.32, 0, 0.005, door);
-scene.add(door);
-
-// ---------- bed (back-right corner) ----------
 const wood = mat(0x8a5a36);
-const bedX = 1.7, bedZ = -0.95;
-box(1.5, 0.25, 2.0, wood, bedX, 0.225, bedZ);                       // frame
-for (const dx of [-0.68, 0.68]) for (const dz of [-0.93, 0.93])
-  box(0.08, 0.1, 0.08, wood, bedX + dx, 0.05, bedZ + dz);           // feet
-box(1.56, 1.05, 0.08, wood, bedX, 0.525, -1.95);                    // headboard
-box(1.44, 0.2, 1.94, white, bedX, 0.45, bedZ);                      // mattress
-box(1.56, 0.26, 1.5, mat(0xffffff, frogTex), bedX, 0.45, bedZ + 0.26); // frog quilt
-const pillow = add(new THREE.SphereGeometry(0.3, 24, 16), mat(0xffffff, checkTex('#3d6fb5', '#f4f4f4', 3)), bedX + 0.25, 0.62, -1.65);
-pillow.scale.set(1.6, 0.4, 0.8);
+const glassMat = new THREE.MeshBasicMaterial({ color: 0xbfe3f7 });
 
-// stuffed bear next to the pillow
-const fur = mat(0xb07a45);
-const bear = new THREE.Group();
-bear.position.set(bedX - 0.45, 0.58, -1.6);
-add(new THREE.SphereGeometry(0.13, 16, 12), fur, 0, 0.1, 0, bear);
-add(new THREE.SphereGeometry(0.1, 16, 12), fur, 0, 0.29, 0.02, bear);
-for (const dx of [-0.08, 0.08]) {
-  add(new THREE.SphereGeometry(0.04), fur, dx, 0.38, 0, bear);
-  add(new THREE.SphereGeometry(0.012), mat(0x111111), dx / 2, 0.31, 0.11, bear);
-  add(new THREE.SphereGeometry(0.05), fur, dx * 1.3, 0.02, 0.1, bear);
+// ---------- windows on the back wall (two, as on the plan) ----------
+const SILL = 0.8, HEAD = 2.0;
+function backWindow(px0, px1) {
+  const w = (px1 - px0) * S, h = HEAD - SILL;
+  const g = group(X((px0 + px1) / 2), (SILL + HEAD) / 2, -D / 2 + 0.01);
+  g.add(new THREE.Mesh(new THREE.PlaneGeometry(w, h), glassMat));
+  for (const sy of [-1, 1]) box(w + 0.1, 0.05, 0.05, white, 0, sy * h / 2, 0.02, g);
+  for (const sx of [-1, 0, 1]) box(0.05, h, 0.05, white, sx * w / 2, 0, 0.02, g);
+  box(w, 0.03, 0.03, white, 0, 0, 0.02, g);
+  box(w + 0.16, 0.04, 0.22, white, 0, -h / 2 - 0.02, 0.11, g); // sill
+  return g;
 }
-add(new THREE.SphereGeometry(0.035), mat(0xe6cfa6), 0, 0.27, 0.1, bear);
-scene.add(bear);
+backWindow(220, 610);                    // above the stand-up desk
+const win2 = backWindow(920, 1290);      // above the bed
 
-// ---------- wall art (right wall, above the bed) ----------
-function framed(tex, w, h, z) {
-  const g = new THREE.Group();
-  g.position.set(W / 2 - 0.03, 1.65, z);
-  g.rotation.y = -Math.PI / 2;
-  box(w + 0.08, h + 0.08, 0.03, mat(0x3a2a1c), 0, 0, 0, g);
-  const p = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshStandardMaterial({ map: tex }));
-  p.position.z = 0.02;
-  g.add(p);
-  scene.add(g);
-}
-framed(flowerTex, 0.7, 0.7, -1.25);
-framed(posterTex, 0.6, 0.6, -0.3);
+// curtain drawn to the left of the bed window, and the striped vase on its sill
+box(0.22, 1.26, 0.03, mat(0xe8dcc0), -0.24, 0, 0.09, win2);
+const vase = group(win2.position.x + 0.12, SILL, -D / 2 + 0.13);
+ball(0.16, mat(0xffffff, stripeTex), 0, 0.15, 0, vase, 1, 0.95, 0.62);
+add(new THREE.CylinderGeometry(0.07, 0.09, 0.06, 20), mat(0x3d6fb5), 0, 0.31, 0, vase).scale.z = 0.62;
+const stem = mat(0x4c8a3a);
+[[-0.13, 0.5, 0xe8647c], [-0.04, 0.58, 0xf2a23c], [0.07, 0.56, 0xe8647c], [0.15, 0.46, 0xb06ad0], [0.02, 0.44, 0xf7d354]]
+  .forEach(([x, y, c]) => {
+    const st = add(new THREE.CylinderGeometry(0.006, 0.006, y - 0.3, 6), stem, x / 2, (y + 0.3) / 2, 0, vase);
+    st.rotation.z = -Math.atan2(x, y - 0.3);
+    ball(0.055, mat(c), x, y, 0, vase, 1, 0.9, 0.7);
+    ball(0.02, mat(0xffe27a), x, y, 0.035, vase);
+  });
+[[-0.2, 0.42, 1.0], [0.1, 0.72, -0.25], [0.2, 0.68, -0.5], [0.02, 0.75, -0.05]].forEach(([x, y, r]) => {
+  const leaf = ball(0.03, stem, x / 2, (y + 0.3) / 2, -0.01, vase, 1, (y - 0.3) / 0.045, 0.3); // tall fronds
+  leaf.rotation.z = r;
+});
 
-// ---------- nightstand with drawers, books and lamp ----------
-const ns = new THREE.Group();
-ns.position.set(0.62, 0, -1.72);
-box(0.5, 0.6, 0.45, wood, 0, 0.3, 0, ns);
-for (const y of [0.17, 0.43]) {
-  box(0.42, 0.2, 0.02, mat(0xa87447), 0, y, 0.23, ns);
-  box(0.14, 0.03, 0.03, mat(0x333333), 0, y, 0.25, ns);
-}
-box(0.2, 0.04, 0.28, mat(0xc0392b), -0.12, 0.62, 0.05, ns);
-box(0.18, 0.04, 0.26, mat(0x2e6fb0), -0.12, 0.66, 0.05, ns);
-scene.add(ns);
-
-function lamp(x, y, z) {
-  const g = new THREE.Group();
-  g.position.set(x, y, z);
-  add(new THREE.CylinderGeometry(0.07, 0.08, 0.03, 20), mat(0x444444), 0, 0.015, 0, g);
-  add(new THREE.CylinderGeometry(0.012, 0.012, 0.25, 8), mat(0x444444), 0, 0.15, 0, g);
-  add(new THREE.CylinderGeometry(0.07, 0.12, 0.16, 20, 1, true),
-      new THREE.MeshStandardMaterial({ color: 0xfff1c4, emissive: 0xffd98a, emissiveIntensity: 0.6, side: THREE.DoubleSide }), 0, 0.33, 0, g);
-  scene.add(g);
-}
-lamp(0.72, 0.6, -1.78);
-
-// ---------- stand-up desk and chair (left wall) ----------
-const deskX = -2.1, deskZ = -1.0;
-box(0.7, 0.05, 1.4, mat(0xe2c89f), deskX, 1.05, deskZ);
-const metal = mat(0x555555);
-for (const dz of [-0.6, 0.6]) {
-  box(0.06, 1.03, 0.06, metal, deskX, 0.515, deskZ + dz);
-  box(0.6, 0.04, 0.08, metal, deskX, 0.02, deskZ + dz);
-}
-lamp(deskX - 0.1, 1.075, deskZ - 0.5);
-box(0.3, 0.02, 0.22, mat(0xf5f5f5), deskX + 0.05, 1.085, deskZ + 0.1).rotation.y = 0.3; // paper
-
-const chair = new THREE.Group();
-chair.position.set(-1.35, 0, -0.9);
-chair.rotation.y = 0.25;
-const chairMat = mat(0x6a4a30);
-box(0.42, 0.05, 0.42, chairMat, 0, 0.45, 0, chair);
-box(0.05, 0.5, 0.42, chairMat, 0.19, 0.72, 0, chair);
-for (const dx of [-0.18, 0.18]) for (const dz of [-0.18, 0.18])
-  box(0.04, 0.45, 0.04, chairMat, dx, 0.225, dz, chair);
-scene.add(chair);
-
-// ---------- cozy sofa (beanbag), plant, shoes ----------
-const sofa = add(new THREE.SphereGeometry(0.7, 32, 24), mat(0xffffff, checkTex('#d9925c', '#e6a873', 10)), -1.25, 0.36, 0.75);
-sofa.scale.set(1, 0.55, 1);
-const back = add(new THREE.SphereGeometry(0.5, 32, 24), sofa.material, -1.6, 0.62, 0.95);
-back.scale.set(0.8, 0.9, 1.1);
-
-function plant(x, z, s = 1) {
-  const g = new THREE.Group();
-  g.position.set(x, 0, z);
-  g.scale.setScalar(s);
-  add(new THREE.CylinderGeometry(0.14, 0.1, 0.24, 20), mat(0xb5613c), 0, 0.12, 0, g);
-  const leaf = mat(0x3f8f45);
-  for (let i = 0; i < 7; i++) {
-    const a = i * Math.PI * 2 / 7;
-    const l = add(new THREE.SphereGeometry(0.1, 12, 8), leaf, Math.cos(a) * 0.1, 0.42, Math.sin(a) * 0.1, g);
-    l.scale.set(0.5, 2.2, 0.5);
-    l.rotation.set(Math.sin(a) * 0.5, 0, -Math.cos(a) * 0.5);
+// ---------- tall double window on the right wall, plaid curtains ----------
+{
+  const z0 = Z(420), z1 = Z(770), w = z1 - z0, y0 = 0.7, y1 = 2.15, h = y1 - y0;
+  const g = group(W / 2 - 0.01, (y0 + y1) / 2, (z0 + z1) / 2, -Math.PI / 2);
+  g.add(new THREE.Mesh(new THREE.PlaneGeometry(w, h), glassMat));
+  for (const sy of [-1, 1]) box(w + 0.1, 0.06, 0.05, white, 0, sy * h / 2, 0.02, g);
+  for (const sx of [-1, 1]) box(0.06, h, 0.05, white, sx * w / 2, 0, 0.02, g);
+  box(0.08, h, 0.05, white, 0, 0, 0.02, g);                         // where the two leaves meet
+  for (const sx of [-1, 1]) {
+    for (const fy of [-1 / 6, 1 / 6]) box(w / 2, 0.05, 0.04, white, sx * w / 4, fy * h, 0.02, g); // three panes each
+    ball(0.03, mat(0xc9a64a), sx * 0.07, -0.1, 0.07, g);            // knobs
+    box(0.24, h + 0.25, 0.05, mat(0xffffff, plaidTex('#e9e2cf', '#7d9a78', '#5c6f8c', 3)), sx * (w / 2 + 0.04), 0, 0.08, g)
+      .material.map.repeat.set(1.5, 7);
   }
-  scene.add(g);
 }
-plant(-2.2, 0.0);
-plant(-0.6, -1.75, 0.8);
 
-const shoeMat = mat(0x2f2f38);
-for (const [x, z, r] of [[0.1, 1.2, 0.2], [0.32, 1.25, -0.1]]) {
-  const s = new THREE.Group();
-  s.position.set(x, 0, z);
-  s.rotation.y = r;
-  box(0.1, 0.05, 0.27, white, 0, 0.025, 0, s);
-  box(0.1, 0.07, 0.25, shoeMat, 0, 0.08, 0, s);
-  box(0.1, 0.07, 0.1, shoeMat, 0, 0.14, -0.07, s);
-  scene.add(s);
+// ---------- door on the front wall, standing open as drawn ----------
+{
+  const hingeX = X(190), w = (520 - 190) * S;
+  const way = group(hingeX + w / 2, 1.0, D / 2 - 0.01, Math.PI);
+  way.add(new THREE.Mesh(new THREE.PlaneGeometry(w, 2.0), new THREE.MeshBasicMaterial({ color: 0x4a4038 })));
+  const frame = new THREE.Mesh(new THREE.PlaneGeometry(w + 0.12, 2.06), white); // flat, so it hides with the wall
+  frame.position.set(0, 0.03, -0.002);
+  way.add(frame);
+  const leaf = group(hingeX, 0, D / 2 - 0.02, Math.atan2(230, 180)); // leaf points at plan (370, 1100)
+  box(w, 2.0, 0.04, mat(0x9a6b43), w / 2, 1.0, 0, leaf);
+  for (const dz of [-0.04, 0.04]) ball(0.03, mat(0xd9b64a), w - 0.08, 1.0, dz, leaf);
+}
+
+// ---------- bed: long side on the back wall, head at the right wall ----------
+{
+  const x0 = X(850), x1 = X(1640), z0 = -D / 2 + 0.02, z1 = Z(800);
+  const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, w = x1 - x0, d = z1 - z0;
+  const cream = mat(0xf2ede2);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1])
+    add(new THREE.CylinderGeometry(0.055, 0.035, 0.2, 12), cream, cx + sx * (w / 2 - 0.1), 0.1, cz + sz * (d / 2 - 0.1));
+  slab(w - 0.04, 0.14, d - 0.04, 0.1, [cream, cream], cx, 0.2, cz);                                  // base
+  slab(w, 0.2, d, 0.12, [white, mat(0xffffff, stitchTex)], cx, 0.34, cz);                            // mattress
+  slab(w + 0.02, 0.05, d + 0.02, 0.13, [mat(0xffffff, quiltTex), mat(0xf3efe4)], cx, 0.54, cz);      // quilt
+  const top = 0.59;
+  ball(1, mat(0xffffff, plaidTex('#39445e', '#1f2738', '#9aa3b8', 4)), X(1540), top + 0.07, Z(560), scene, 0.24, 0.085, 0.4);
+
+  // stuffed hippo lying beside the pillow, facing into the room
+  const lilac = mat(0x9a93b8), dark = mat(0x1d1d28);
+  const hippo = group(X(1385), top, Z(415), -0.65);
+  ball(1, lilac, 0, 0.11, -0.08, hippo, 0.13, 0.11, 0.19);       // body
+  ball(1, lilac, 0, 0.13, 0.15, hippo, 0.1, 0.095, 0.12);        // head
+  ball(1, lilac, 0, 0.1, 0.26, hippo, 0.115, 0.085, 0.1);        // snout
+  for (const sx of [-1, 1]) {
+    ball(0.028, lilac, sx * 0.07, 0.22, 0.1, hippo);             // ears
+    ball(0.024, white, sx * 0.045, 0.215, 0.19, hippo);          // eyes sit on top of the head
+    ball(0.012, dark, sx * 0.045, 0.222, 0.208, hippo);
+    ball(0.012, dark, sx * 0.04, 0.15, 0.345, hippo);            // nostrils
+    ball(0.05, lilac, sx * 0.13, 0.04, 0.05, hippo, 1, 0.8, 1.3);   // front feet
+    ball(0.05, lilac, sx * 0.13, 0.04, -0.2, hippo, 1, 0.8, 1.3);   // back feet
+  }
+}
+
+// ---------- poster on the back wall, right of the bed window ----------
+{
+  const g = group(X(1465), 1.7, -D / 2 + 0.01);
+  const p = new THREE.Mesh(new THREE.PlaneGeometry(0.45, 0.6), new THREE.MeshStandardMaterial({ map: posterTex }));
+  g.add(p);
+}
+
+// ---------- lamps ----------
+function shade(rTop, rBottom, h, y, parent, map) {
+  return add(new THREE.CylinderGeometry(rTop, rBottom, h, 28, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0xfff1c4, map, emissive: 0xffd98a, emissiveIntensity: 0.35, side: THREE.DoubleSide }),
+    0, y, 0, parent);
+}
+{ // floor lamp with a woven shade, between the desk and the bed
+  const g = group(X(735), 0, Z(400));
+  const metal = mat(0x4a4a4a);
+  add(new THREE.CylinderGeometry(0.05, 0.14, 0.08, 24), metal, 0, 0.04, 0, g);
+  add(new THREE.CylinderGeometry(0.015, 0.015, 1.4, 10), metal, 0, 0.75, 0, g);
+  shade(0.12, 0.25, 0.5, 1.6, g, wovenTex);
+}
+
+// ---------- small counter (nightstand) with lamp and book, drawers face the room ----------
+{
+  const x0 = X(1450), x1 = W / 2 - 0.02, z0 = Z(880), z1 = Z(1100);
+  const w = x1 - x0, d = z1 - z0, h = 0.5;
+  const g = group((x0 + x1) / 2, 0, (z0 + z1) / 2);
+  box(w, h, d, wood, 0, 0.05 + h / 2, 0, g);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) box(0.05, 0.05, 0.05, wood, sx * (w / 2 - 0.04), 0.025, sz * (d / 2 - 0.04), g);
+  for (const y of [0.18, 0.42]) {
+    box(0.02, 0.2, d - 0.08, mat(0xa87447), -w / 2 - 0.01, y, 0, g);
+    box(0.03, 0.03, 0.2, mat(0x333333), -w / 2 - 0.03, y, 0, g);
+  }
+  const tableTop = 0.05 + h;
+  const book = box(0.26, 0.04, 0.19, mat(0x2e6fb0), -0.14, tableTop + 0.02, -0.14, g);
+  book.rotation.y = 0.3;
+  const lamp = new THREE.Group();
+  lamp.position.set(X(1590) - g.position.x, tableTop, Z(1000) - g.position.z);
+  g.add(lamp);
+  add(new THREE.CylinderGeometry(0.07, 0.08, 0.03, 20), mat(0x444444), 0, 0.015, 0, lamp);
+  add(new THREE.CylinderGeometry(0.012, 0.012, 0.22, 8), mat(0x444444), 0, 0.13, 0, lamp);
+  shade(0.07, 0.16, 0.26, 0.36, lamp);
+}
+
+// ---------- drawer (dresser) against the front wall ----------
+{
+  const x0 = X(880), x1 = X(1380), z0 = Z(1050), z1 = D / 2 - 0.02;
+  const w = x1 - x0, d = z1 - z0, h = 0.8;
+  const g = group((x0 + x1) / 2, 0, (z0 + z1) / 2);
+  box(w, h, d, wood, 0, h / 2, 0, g);
+  for (let r = 0; r < 3; r++) for (const sx of [-1, 1]) {
+    const y = 0.15 + r * 0.25;
+    box(w / 2 - 0.06, 0.21, 0.02, mat(0xa87447), sx * w / 4, y, -d / 2 - 0.01, g);
+    ball(0.02, mat(0x333333), sx * w / 4, y, -d / 2 - 0.03, g);
+  }
+}
+
+// ---------- plants ----------
+function plant(x, y, z, potR, potH, leafLen, n) {
+  const g = group(x, y, z);
+  add(new THREE.CylinderGeometry(potR, potR * 0.75, potH, 20), mat(0xb5613c), 0, potH / 2, 0, g);
+  const leaf = mat(0x3f8f45);
+  for (let i = 0; i < n; i++) {
+    const a = i * Math.PI * 2 / n, tilt = i % 2 ? 0.75 : 0.35;
+    const pivot = new THREE.Group();
+    pivot.position.y = potH;
+    pivot.rotation.set(0, a, 0);
+    g.add(pivot);
+    const l = ball(1, leaf, 0, 0, 0, pivot, leafLen * 0.11, leafLen / 2, leafLen * 0.03);
+    l.rotation.z = -tilt;
+    l.position.set(Math.sin(tilt) * leafLen / 2, Math.cos(tilt) * leafLen / 2, 0);
+  }
+}
+plant(X(1545), 0, Z(1245), 0.17, 0.32, 0.55, 12);   // floor plant in the front-right corner
+plant(X(560), 1.07, Z(340), 0.045, 0.08, 0.2, 8);    // small plant on the desk corner
+
+// ---------- stand-up desk (top-left), slab legs ----------
+{
+  const x0 = X(100), x1 = X(590), z0 = Z(310), z1 = Z(590);
+  const w = x1 - x0, d = z1 - z0, top = 1.05;
+  const g = group((x0 + x1) / 2, 0, (z0 + z1) / 2);
+  box(w, 0.04, d, mat(0xe2c89f), 0, top, 0, g);
+  const legMat = mat(0xd9d4c8);
+  for (const sx of [-1, 1]) {
+    box(0.05, top - 0.02, d * 0.55, legMat, sx * (w / 2 - 0.12), (top - 0.02) / 2, 0, g);
+    box(0.08, 0.03, d * 0.9, legMat, sx * (w / 2 - 0.12), 0.015, 0, g);
+  }
+}
+
+// ---------- cozy sofa (round beanbag by the left wall) ----------
+{
+  const g = group(X(220), 0, Z(900));
+  const m = mat(0xffffff, hatchTex);
+  ball(1, m, 0, 0.27, 0, g, 0.43, 0.3, 0.43);
+  ball(1, m, -0.1, 0.42, 0, g, 0.3, 0.3, 0.38);   // raised back, against the wall
+}
+
+// ---------- shoes on the floor near the door ----------
+const shoeMat = mat(0x3a3a44);
+for (const [px, py, r] of [[600, 1185, 1.2], [640, 1225, 1.05]]) {
+  const s = group(X(px), 0, Z(py), r);
+  box(0.1, 0.03, 0.27, white, 0, 0.015, 0, s);
+  ball(1, shoeMat, 0, 0.07, 0.03, s, 0.05, 0.05, 0.13);
+  box(0.095, 0.1, 0.11, shoeMat, 0, 0.1, -0.075, s);
 }
 
 // ---------- render loop ----------
