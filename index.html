@@ -5,13 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Apartment Room for Max</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #10141f; font-family: system-ui, sans-serif; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #090b12; font-family: system-ui, sans-serif; color: #f3e6cf; }
   canvas { display: block; }
-  #label { position: fixed; left: 16px; top: 12px; color: #f3e6cf; }
+  #label { position: fixed; left: 16px; top: 12px; }
   #label h1 { margin: 0; font-size: 18px; font-weight: 600; }
   #label p { margin: 2px 0 8px; font-size: 13px; opacity: .7; }
+  #transport { position: fixed; left: 16px; bottom: 14px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  #clock { font-size: 13px; font-variant-numeric: tabular-nums; margin-right: 8px; opacity: .85; min-width: 11.5em; }
   button { font: inherit; font-size: 13px; padding: 5px 10px; margin-right: 4px; color: #f3e6cf; border: 1px solid rgba(243,230,207,.35); border-radius: 6px; background: rgba(30,26,24,.6); cursor: pointer; }
   button:hover { background: rgba(80,62,48,.7); }
+  button[aria-pressed="true"] { background: rgba(150,100,60,.75); }
+  #begin { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(5,6,10,.35); }
+  #begin button { font-size: 16px; padding: 12px 22px; background: rgba(60,44,34,.85); }
+  #begin small { display: block; margin-top: 4px; font-size: 12px; opacity: .7; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -23,22 +29,31 @@
 <body>
 <div id="label">
   <h1>Apartment Room for Max</h1>
-  <p>First light · drag to rotate · scroll to zoom · the two-window wall faces east</p>
+  <p>Drag to rotate · scroll to zoom · the two-window wall faces east</p>
   <button data-view="overview">Overview</button><button data-view="sketch">Sketch view</button><button data-view="plan">Floor plan</button>
 </div>
+<div id="transport" hidden>
+  <span id="clock"></span>
+  <button id="play">Pause</button>
+  <button id="restart">Restart</button>
+  <button data-speed="1">Real time</button><button data-speed="20">20×</button><button data-speed="60">60×</button>
+  <button id="sound">Sound on</button>
+</div>
+<div id="begin"><button>Begin the sunrise<small>with music · one minute before the sun comes up</small></button></div>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 // Bump ?v= whenever src/ changes: it stops a browser pairing this page with an older cached module.
-import { createPipeline } from './src/pipeline.js?v=5';
-import { buildScene, views } from './src/scene.js?v=5';
+import { createPipeline } from './src/pipeline.js?v=6';
+import { buildScene, views, SUNRISE } from './src/scene.js?v=6';
+import { createMusic } from './src/audio.js?v=6';
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 100);
 const pipeline = createPipeline(scene, camera);
 const room = buildScene(scene, pipeline.renderer);
+const music = createMusic();
 pipeline.hideFromAO.push(...room.hideFromAO);
-pipeline.setVolumetric(room.volumetric);
 
 const controls = new OrbitControls(camera, pipeline.renderer.domElement);
 controls.enableDamping = true;
@@ -54,11 +69,73 @@ function setView(name, custom) {
   controls.update();
   pipeline.invalidate();
 }
-document.querySelectorAll('button').forEach(b => b.onclick = () => setView(b.dataset.view));
+document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => setView(b.dataset.view));
 setView('overview');
 window.__look = (position, target) => setView(null, [position, target]);   // console helper: aim the camera anywhere
 
-pipeline.start(() => controls.update());
+// ---------- the sunrise ----------
+// `minutes` is time relative to sunrise. `speed` is how many times faster than
+// real life it runs. `breeze` is real seconds of wind, which always runs at 1x.
+const $ = id => document.getElementById(id);
+let minutes = SUNRISE.start, speed = 20, playing = false, breeze = 0, last = performance.now(), tick = 0;
+
+function applySun() {
+  const { exposure, progress } = room.setSun(minutes);
+  pipeline.renderer.toneMappingExposure = exposure;
+  music.setProgress(progress);
+  const s = Math.round(Math.abs(minutes) * 60), mmss = `${s / 60 | 0}:${String(s % 60).padStart(2, '0')}`;
+  $('clock').textContent = minutes < 0 ? `${mmss} before sunrise` : `Sunrise + ${mmss}`;
+}
+// The shadow map and the beams' depth map are redrawn on alternate frames: both
+// only change slowly, and this halves what a moving sun and curtain cost.
+function refreshLight() {
+  if (tick++ % 2) pipeline.renderer.shadowMap.needsUpdate = true;
+  else room.renderSunDepth();
+  pipeline.setVolumetric(room.volumetric);
+}
+function setSpeed(x) {
+  speed = x;
+  document.querySelectorAll('[data-speed]').forEach(b => b.setAttribute('aria-pressed', +b.dataset.speed === x));
+}
+function setPlaying(on) {
+  playing = on;
+  last = performance.now();
+  $('play').textContent = on ? 'Pause' : 'Play';
+  music.setPlaying(on);
+}
+
+applySun();
+pipeline.renderer.shadowMap.needsUpdate = true;
+pipeline.setVolumetric(room.volumetric);
+setSpeed(speed);
+
+$('begin').onclick = () => {
+  $('begin').remove();
+  $('transport').hidden = false;
+  music.start();
+  setPlaying(true);
+};
+$('play').onclick = () => setPlaying(!playing);
+$('restart').onclick = () => { minutes = SUNRISE.start; music.restart(); applySun(); refreshLight(); refreshLight(); pipeline.invalidate(); };
+document.querySelectorAll('[data-speed]').forEach(b => b.onclick = () => setSpeed(+b.dataset.speed));
+let soundOn = true;
+$('sound').onclick = () => { soundOn = !soundOn; music.setMuted(!soundOn); $('sound').textContent = soundOn ? 'Sound on' : 'Sound off'; };
+
+pipeline.start(() => {
+  controls.update();
+  const now = performance.now(), dt = Math.min(0.1, (now - last) / 1000);
+  last = now;
+  if (!playing) return;                       // paused: nothing moves, so the pipeline goes back to idling
+  minutes = Math.min(SUNRISE.end, minutes + dt * speed / 60);
+  breeze += dt;
+  applySun();
+  music.setGust(room.setWind(breeze, Math.min(1, breeze / 8)));   // the breeze picks up over the first few seconds
+  refreshLight();
+  pipeline.invalidate();
+});
+
+// console helper: jump to a moment, e.g. __at(12) for twelve minutes after sunrise
+window.__at = (m, wind = breeze) => { minutes = m; breeze = wind; applySun(); room.setWind(breeze, 1); refreshLight(); refreshLight(); pipeline.invalidate(); };
 </script>
 </body>
 </html>

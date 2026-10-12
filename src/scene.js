@@ -13,8 +13,11 @@ const X = px => (px - 30) * S - W / 2;   // plan x -> world x (north wall .. sou
 const Z = py => (py - 300) * S - D / 2;  // plan y -> world z (east wall .. west wall)
 const Y0 = 0.7, Y1 = 2.15;               // sill and head height shared by all three windows
 
-// First light: the sun has only just cleared the hills, due east and a touch south.
-const sunDir = new THREE.Vector3(0.12, 0.10, -1).normalize();
+// The sun moves: buildScene().setSun(minutes) places it. Sunrise is minute 0.
+// It climbs the way it does at Tuscany's latitude: about 0.18 degrees a minute
+// upwards while sliding 0.17 degrees a minute to the south.
+const sunDir = new THREE.Vector3(0, 0, -1);
+export const SUNRISE = { start: -1, end: 45 };   // minutes covered by the animation
 
 export const views = {
   overview: [[-3.3, 3.3, 4.6], [0.2, 0.85, -0.1]],
@@ -425,30 +428,17 @@ export function buildScene(scene, renderer) {
     });
   });
 
-  // The view outside: a full 360-degree dawn over the hills. u = 0.5 is due east.
-  const sunU = Math.atan2(sunDir.x, sunDir.z) / (Math.PI * 2);
-  const skyTex = tex(8192, 1024, (g, w, h) => {
-    const horizon = h * 0.55, sx = (sunU < 0 ? sunU + 1 : sunU) * w;
-    const sy = horizon - h * (20 * sunDir.y / Math.hypot(sunDir.x, sunDir.z)) / 14;   // where the sun stands on this canvas
-    const sky = g.createLinearGradient(0, 0, 0, horizon);
-    sky.addColorStop(0, '#0f1838'); sky.addColorStop(0.4, '#2c3a6e'); sky.addColorStop(0.72, '#8a5f86'); sky.addColorStop(0.9, '#e98a62'); sky.addColorStop(1, '#ffc27a');
-    g.fillStyle = sky; g.fillRect(0, 0, w, h);
-    // the glow of the low sun, spread wide along the horizon
-    g.save(); g.translate(sx, horizon - 40); g.scale(1, 0.24);
-    const glow = g.createRadialGradient(0, 0, 0, 0, 0, 2600);
-    glow.addColorStop(0, 'rgba(255,214,140,0.95)'); glow.addColorStop(0.35, 'rgba(255,160,100,0.55)'); glow.addColorStop(1, 'rgba(255,140,110,0)');
-    g.fillStyle = glow; g.fillRect(-2600, -2600, 5200, 5200); g.restore();
-    const halo = g.createRadialGradient(sx, sy, 0, sx, sy, 620);
-    halo.addColorStop(0, 'rgba(255,246,214,1)'); halo.addColorStop(0.12, 'rgba(255,224,160,0.8)'); halo.addColorStop(1, 'rgba(255,200,140,0)');
-    g.fillStyle = halo; g.fillRect(sx - 620, 0, 1240, horizon);
-    // streaks of cloud, lit pink and gold near the sun
-    for (let i = 0; i < 70; i++) {
+  // The land outside: a full 360-degree ring of hills, cypresses, farmhouses and
+  // streaks of cloud, on a clear background. The sky itself, and the light on
+  // all of this, are computed per frame in the sky shader.
+  const landTex = tex(8192, 1024, (g, w, h) => {
+    for (let i = 0; i < 70; i++) {                        // clouds: white, the shader colours them
       const x = rand() * w, y = 110 + rand() * 330, cw = 220 + rand() * 620, ch = 9 + rand() * 20;
-      const near = Math.max(0, 1 - Math.abs(x - sx) / 2200);
-      g.fillStyle = `rgba(${180 + 75 * near | 0},${150 + 50 * near | 0},${185 - 40 * near | 0},${0.22 + 0.3 * near})`;
+      g.fillStyle = `rgba(255,255,255,${0.25 + rand() * 0.35})`;
       for (const ox of [-w, 0, w]) { g.beginPath(); g.ellipse(x + ox, y, cw / 2, ch, 0, 0, Math.PI * 2); g.fill(); }
     }
-    const layers = [['#5a5f8c', 0.52, 26, 3, 7], ['#4c5e6c', 0.58, 32, 4, 9], ['#4f5f48', 0.65, 38, 5, 11], ['#585436', 0.73, 30, 4, 13], ['#2f3d20', 0.82, 34, 6, 15]];
+    // the farthest ridge is kept low, so the sun clears it within a few minutes of rising
+    const layers = [['#5a5f8c', 0.553, 6, 3, 7], ['#4c5e6c', 0.58, 22, 4, 9], ['#4f5f48', 0.65, 34, 5, 11], ['#585436', 0.73, 30, 4, 13], ['#2f3d20', 0.82, 34, 6, 15]];
     layers.forEach(([color, base, amp, k1, k2], n) => {
       const p1 = rand() * 6, p2 = rand() * 6;   // whole numbers of waves, so the panorama closes on itself
       const ridge = x => h * base + amp * Math.sin(x / w * Math.PI * 2 * k1 + p1) + amp * 0.5 * Math.sin(x / w * Math.PI * 2 * k2 + p2);
@@ -456,30 +446,27 @@ export function buildScene(scene, renderer) {
       g.beginPath(); g.moveTo(0, h);
       for (let x = 0; x <= w; x += 8) g.lineTo(x, ridge(x));
       g.lineTo(w, h); g.fill();
-      if (n >= 1) for (let i = 0; i < 60; i++) {         // cypresses along each ridge
+      if (n >= 2) for (let i = 0; i < 60; i++) {         // cypresses along the nearer ridges
         const x = rand() * w, th = (18 + rand() * 26) * (0.6 + n * 0.35);
         g.fillStyle = n < 3 ? '#2f4340' : '#1b2a1e';
         g.beginPath(); g.ellipse(x, ridge(x) - th * 0.45, th * 0.14, th * 0.55, 0, 0, Math.PI * 2); g.fill();
       }
-      if (n === 2) for (let i = 0; i < 7; i++) {         // farmhouses, a lamp already lit in each
+      if (n === 2) for (let i = 0; i < 7; i++) {         // farmhouses
         const fx = (i + 0.35 + rand() * 0.3) * w / 7, y = ridge(fx);
         g.fillStyle = '#8f7a66'; g.fillRect(fx - 46, y - 50, 92, 52);
         g.fillStyle = '#6a3a2c'; g.beginPath(); g.moveTo(fx - 56, y - 50); g.lineTo(fx, y - 80); g.lineTo(fx + 56, y - 50); g.fill();
-        g.fillStyle = '#ffd77a'; for (const dx of [-26, 14]) g.fillRect(fx + dx, y - 36, 12, 16);
+        g.fillStyle = '#3a2c22'; for (const dx of [-26, 14]) g.fillRect(fx + dx, y - 36, 12, 16);
       }
       if (n === 4) {                                      // vineyard rows in the foreground
-        g.strokeStyle = 'rgba(44,66,30,0.55)'; g.lineWidth = 5;
+        g.strokeStyle = 'rgba(30,46,20,0.55)'; g.lineWidth = 5;
         for (let x = -200; x < w + 200; x += 46) { g.beginPath(); g.moveTo(x, h); g.lineTo(x + 90, h * 0.83); g.stroke(); }
       }
-      if (n < 4) {                                        // morning mist pooled in each valley
+      if (n > 0 && n < 4) {                               // morning mist pooled in each valley
         const mist = g.createLinearGradient(0, h * base - 10, 0, h * base + 110);
-        mist.addColorStop(0, 'rgba(255,190,170,0)'); mist.addColorStop(0.55, 'rgba(255,190,170,0.42)'); mist.addColorStop(1, 'rgba(255,190,170,0)');
+        mist.addColorStop(0, 'rgba(255,215,200,0)'); mist.addColorStop(0.55, 'rgba(255,215,200,0.42)'); mist.addColorStop(1, 'rgba(255,215,200,0)');
         g.fillStyle = mist; g.fillRect(0, h * base - 10, w, 120);
       }
     });
-    const warm = g.createRadialGradient(sx, horizon, 0, sx, horizon, 1800);   // hills facing the sun warm up
-    warm.addColorStop(0, 'rgba(255,150,70,0.45)'); warm.addColorStop(1, 'rgba(255,170,90,0)');
-    g.fillStyle = warm; g.fillRect(sx - 1800, horizon - 100, 3600, h);
   });
 
   // ---------- shared materials ----------
@@ -499,17 +486,17 @@ export function buildScene(scene, renderer) {
   // Bevelled panes use real transmission, so the view outside bends at the bevels.
   const glass = new THREE.MeshPhysicalMaterial({ color: 0xffffff, transmission: 1, roughness: 0.02, ior: 1.52, thickness: 0.06, specularIntensity: 1 });
 
-  // ---------- lighting: the first minutes of sunrise ----------
-  // The room is still dark and every lamp is off. The only real light is the
-  // sun, almost level with the horizon, reaching in through the east windows.
+  // ---------- lighting ----------
+  // Every lamp is off. The only real light is the sun, and it moves: setSun()
+  // near the end of this file drives everything declared here.
   scene.background = new THREE.Color(0x090b12);
-  scene.add(new THREE.HemisphereLight(0x7f93cc, 0x3c2a20, 0.1));     // what little the sky gives
+  const skyFill = new THREE.HemisphereLight(0x7f93cc, 0x3c2a20, 0.1);     // what little the sky gives
+  scene.add(skyFill);
 
-  const sun = new THREE.DirectionalLight(0xff8436, 11);
+  const sun = new THREE.DirectionalLight(0xffffff, 0);
   sun.target.position.set(0, 1.3, 0);
-  sun.position.copy(sunDir).multiplyScalar(8).add(sun.target.position);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(4096, 4096);
+  sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.bias = -0.0005;
   sun.shadow.normalBias = 0.015;
   sun.shadow.radius = 2;
@@ -518,18 +505,19 @@ export function buildScene(scene, renderer) {
   scene.add(sun, sun.target);
 
   // what the sunlit patches throw back: off the west wall, and off the bed
-  for (const [x, y, z, power] of [[0.3, 1.25, 0.95, 1.5], [0.9, 0.95, -0.3, 0.5]]) {
-    const bounce = new THREE.PointLight(0xff9558, power, 5, 2);
-    bounce.position.set(x, y, z);
-    scene.add(bounce);
-  }
+  const bounces = [[0.3, 1.25, 0.95, 1.5], [0.9, 0.95, -0.3, 0.5]].map(([x, y, z, power]) => {
+    const light = new THREE.PointLight(0xff9558, 0, 5, 2);
+    light.position.set(x, y, z);
+    scene.add(light);
+    return [light, power];
+  });
 
   // A dim procedural dawn for image-based fill and for reflections in glass, glaze and brass.
   {
     const pmrem = new THREE.PMREMGenerator(renderer), env = new THREE.Scene();
     env.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.ShaderMaterial({
       side: THREE.BackSide,
-      uniforms: { sd: { value: sunDir } },
+      uniforms: { sd: { value: new THREE.Vector3(0.12, 0.10, -1).normalize() } },
       vertexShader: 'varying vec3 d; void main(){ d = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }',
       fragmentShader: `varying vec3 d; uniform vec3 sd;
         void main(){ vec3 n = normalize(d);
@@ -580,28 +568,40 @@ export function buildScene(scene, renderer) {
   });
   const throughWindows = { stencilWrite: true, stencilRef: 1, stencilFunc: THREE.EqualStencilFunc };
   const outside = new THREE.Group();
-  outside.renderOrder = -1;
   scene.add(outside);
   hideFromAO.push(outside);
-  {
-    const eye = 1.4, R = 20, tall = 14, y0 = eye - tall * 0.45;       // horizon at eye level
-    const pano = new THREE.Mesh(new THREE.CylinderGeometry(R, R, tall, 96, 1, true),
-      new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, ...throughWindows }));
-    pano.material.color.setScalar(0.7);                               // dimmed: the land is still in shadow
-    pano.position.y = y0 + tall / 2;
-    pano.renderOrder = -1;
-    const ground = new THREE.Mesh(new THREE.CircleGeometry(R, 64), new THREE.MeshBasicMaterial({ color: 0x1a2212, ...throughWindows }));
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = y0;
-    ground.renderOrder = -1;
-    const flat2 = Math.hypot(sunDir.x, sunDir.z);
-    const disc = new THREE.Mesh(new THREE.CircleGeometry(0.42, 40), new THREE.MeshBasicMaterial({ ...throughWindows }));
-    disc.material.color.setRGB(18, 8, 2.5);                           // far over white: the sun itself
-    disc.position.set(0, eye, 0).addScaledVector(sunDir, (R - 1) / flat2);
-    disc.lookAt(0, eye, 0);
-    disc.renderOrder = -1;
-    outside.add(pano, ground, disc);
-  }
+  const sky = {                                                     // set by setSun()
+    map: { value: landTex }, uSun: { value: sunDir },
+    uZenith: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() },
+    uLand: { value: new THREE.Color() }, uCloud: { value: new THREE.Color() }, uDisc: { value: 0 },
+  };
+  const eye = 1.4, R = 20, tall = 14, y0 = eye - tall * 0.45;       // horizon at eye level
+  const pano = new THREE.Mesh(new THREE.CylinderGeometry(R, R, tall, 96, 1, true), new THREE.ShaderMaterial({
+    uniforms: sky, side: THREE.BackSide, ...throughWindows,
+    vertexShader: `varying vec3 vDir; varying vec2 vUv;
+      void main(){ vUv = uv; vDir = (modelMatrix * vec4(position, 1.)).xyz - vec3(0., ${eye.toFixed(1)}, 0.);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }`,
+    fragmentShader: `uniform sampler2D map; uniform vec3 uSun, uZenith, uHorizon, uGlow, uLand, uCloud; uniform float uDisc;
+      varying vec3 vDir; varying vec2 vUv;
+      void main(){
+        vec3 d = normalize(vDir);
+        float toSun = max(dot(d, uSun), 0.);
+        float sameSide = max(dot(normalize(d.xz), normalize(uSun.xz)), 0.);
+        vec3 c = mix(uHorizon, uZenith, pow(clamp(d.y * 2.2 + .02, 0., 1.), .55));
+        c += uGlow * (.55 * pow(toSun, 6.) + .9 * pow(toSun, 40.) + .5 * exp(-abs(d.y) * 9.) * pow(sameSide, 3.));
+        c += uDisc * vec3(1., .42, .1) * smoothstep(.99988, .99993, dot(d, uSun));          // the sun's disc
+        vec4 t = texture2D(map, vUv);                                                        // hills and cloud in front of it
+        vec3 lit = mix(uLand * (1. + 1.5 * pow(sameSide, 4.)), uCloud * (1. + 2.5 * pow(toSun, 3.)), smoothstep(.44, .5, vUv.y));
+        gl_FragColor = vec4(mix(c, t.rgb * lit, t.a), 1.);
+      }`,
+  }));
+  pano.position.y = y0 + tall / 2;
+  pano.renderOrder = -1;
+  const ground = new THREE.Mesh(new THREE.CircleGeometry(R, 64), new THREE.MeshBasicMaterial({ ...throughWindows }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = y0;
+  ground.renderOrder = -1;
+  outside.add(pano, ground);
 
   // ---------- windows ----------
   function paneGeo(pw, ph) {
@@ -613,7 +613,8 @@ export function buildScene(scene, renderer) {
   }
 
   // A two-leaf wooden casement, three bevelled panes per leaf, with a handle on each leaf.
-  function casement(w, h, parent) {
+  // open = how far each leaf is swung into the room, in radians: [left, right]
+  function casement(w, h, parent, open = [0, 0]) {
     const f = 0.05, st = 0.045, mu = 0.024;
     for (const s of [-1, 1]) {
       box(w, f, 0.07, frameWood, 0, s * (h - f) / 2, 0, parent);
@@ -623,7 +624,8 @@ export function buildScene(scene, renderer) {
     const pw = lw - 2 * st, ph = (ih - 2 * st - 2 * mu) / 3;
     const geo = paneGeo(pw, ph);
     for (const s of [-1, 1]) {
-      const leaf = group(s * lw / 2, 0, 0.012, 0, parent);
+      const hinge = group(s * iw / 2, 0, 0.012, s * open[s < 0 ? 0 : 1], parent);
+      const leaf = group(-s * lw / 2, 0, 0, 0, hinge);
       for (const t of [-1, 1]) {
         box(st, ih, 0.045, frameWood, t * (lw - st) / 2, 0, 0, leaf);
         box(pw, st, 0.045, frameWood, 0, t * (ih - st) / 2, 0, leaf);
@@ -652,8 +654,33 @@ export function buildScene(scene, renderer) {
     return m;
   }
 
+  // The breeze. Curtains by the open window are pinned at the rod and free at
+  // the hem; the wind comes in swells, pushing them into the room and letting
+  // them fall back. The same motion is applied wherever those curtains are
+  // drawn (colour, shadow, and the depth map the light beams use).
+  const wind = { uTime: { value: 0 }, uWind: { value: 0 } };
+  const blown = material => {
+    material.onBeforeCompile = sh => {
+      Object.assign(sh.uniforms, wind);
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform float uTime, uWind;')
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+          float hang = 1. - uv.y, free = hang * hang;
+          float swell = .55 + .45 * sin(uTime * .6) * sin(uTime * .23 + 1.3);
+          float ripple = .5 + .5 * sin(uTime * 1.7 - hang * 3.2 + position.x * 5.);
+          transformed.z += uWind * free * swell * (.09 + .06 * ripple);
+          transformed.x += uWind * free * .035 * sin(uTime * 1.1 + hang * 4.);
+          transformed.y += uWind * free * swell * .02;`);
+    };
+    material.customProgramCacheKey = () => 'blown';
+    return material;
+  };
+  const windCurtains = [];
+  const blownDepth = blown(new THREE.MeshDepthMaterial({ side: THREE.DoubleSide }));
+  const blownMask = blown(new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+
   // A window set `depth` metres into the wall, with an iron rod and a pair of curtains.
-  function windowUnit(w, depth, x, z, rotY, curtainMat, curtainBottom) {
+  function windowUnit(w, depth, x, z, rotY, curtainMat, curtainBottom, open) {
     const h = Y1 - Y0, g = group(x, (Y0 + Y1) / 2, z, rotY);
     const portal = new THREE.Mesh(new THREE.PlaneGeometry(w, h), portalMat);
     portal.renderOrder = -2;
@@ -669,7 +696,7 @@ export function buildScene(scene, renderer) {
       lid.rotation.x = s * Math.PI / 2;
     }
     box(w + 0.1, 0.035, 0.06, stone, 0, -h / 2 - 0.0175, 0.03, g);          // sill nosing
-    casement(w, h, group(0, 0, -depth + 0.035, 0, g));
+    casement(w, h, group(0, 0, -depth + 0.035, 0, g), open);
 
     const rodY = h / 2 + 0.12, rodLen = w + 0.56, yb = curtainBottom - (Y0 + Y1) / 2;
     cyl(0.011, 0.011, rodLen, iron, 0, rodY, 0.09, g).rotation.z = Math.PI / 2;
@@ -679,6 +706,7 @@ export function buildScene(scene, renderer) {
       const c = curtain(0.32, rodY - yb, curtainMat);
       c.position.set(s * (w / 2 + 0.09), (rodY + yb) / 2, 0.09);
       g.add(c);
+      if (open) { c.customDepthMaterial = blownDepth; windCurtains.push(c); }
     }
     return g;
   }
@@ -686,8 +714,9 @@ export function buildScene(scene, renderer) {
   const linen = mat(0xffffff, linenTex('#f3e6c8', '#b89f6e', 3, 10), { side: THREE.DoubleSide });
   const plaid = mat(0xffffff, plaidTex('#f1e3c4', '#b5562f', '#6f7f3f', 2.5, 9), { side: THREE.DoubleSide });
   const DEEP = 0.42;                                                           // east windows sit deep in the wall
-  const eastWindows = [[220, 610, 1.09], [920, 1290, 0.62]];                   // [plan x0, plan x1, curtain hem]
-  for (const [a, b, hem] of eastWindows) windowUnit((b - a) * S, DEEP, X((a + b) / 2), -D / 2, 0, linen, hem);
+  const breezyLinen = blown(new THREE.MeshStandardMaterial({ map: linen.map, roughness: 0.85, side: THREE.DoubleSide }));
+  windowUnit(390 * S, DEEP, X(415), -D / 2, 0, linen, 1.09);                               // east, above the desk: shut
+  windowUnit(370 * S, DEEP, X(1105), -D / 2, 0, breezyLinen, 0.73, [1.43, 1.36]);          // east, above the bed: both leaves open
   windowUnit(350 * S, 0.12, W / 2, Z(595), -Math.PI / 2, plaid, 0.62);         // south, behind the pillow
 
   // ---------- large majolica vase of flowers on the deep sill above the bed ----------
@@ -814,7 +843,7 @@ export function buildScene(scene, renderer) {
 
     // the stuffed pink hippo, plush all over, legs in red-and-orange stripes
     const pink = mat(0xf2a0b8), pale = mat(0xf8c3d2), dark = mat(0x2a1a20), socks = mat(0xffffff, stripeTex);
-    const hx = X(1362), hz = Z(440);
+    const hx = X(1362), hz = Z(465);
     const hippo = group(hx, duvetTop(hx, hz) - 0.012, hz, -0.65);
     const plush = [];
     const part = (r, material, x, y, z, sx = 1, sy = 1, sz = 1) => {
@@ -1080,14 +1109,14 @@ export function buildScene(scene, renderer) {
     }
   }
 
-  // Nothing in the room moves. Fold every mesh that shares a material into one
+  // Almost nothing in the room moves. Fold every mesh that shares a material into one
   // world-space mesh (hundreds of draw calls become a few dozen), then freeze
   // all transforms.
   scene.updateMatrixWorld(true);
   {
     const special = new Set(hideFromAO), buckets = new Map();
     scene.traverse(o => {
-      if (!o.isMesh || o.isInstancedMesh || Array.isArray(o.material) || o.renderOrder !== 0) return;
+      if (!o.isMesh || o.isInstancedMesh || Array.isArray(o.material) || o.renderOrder !== 0 || windCurtains.includes(o)) return;
       for (let p = o; p; p = p.parent) if (special.has(p)) return;
       const key = `${o.material.uuid}|${o.castShadow}|${o.receiveShadow}`;
       if (!buckets.has(key)) buckets.set(key, []);
@@ -1113,34 +1142,87 @@ export function buildScene(scene, renderer) {
 
   // The beams of light in the air are worked out in the pipeline by walking each
   // view ray through the room and asking, step by step, "can this point see the
-  // sun?". That needs a depth picture of the room taken from the sun: render it once.
+  // sun?". That needs a depth picture of the room taken from the sun.
   const sunCam = new THREE.OrthographicCamera(sunBox.left, sunBox.right, sunBox.top, sunBox.bottom, sunBox.near, sunBox.far);
-  sunCam.position.copy(sun.position);
-  sunCam.lookAt(sun.target.position);
-  sunCam.updateMatrixWorld(true);
   const sunDepth = new THREE.WebGLRenderTarget(1024, 1024, { depthTexture: new THREE.DepthTexture(1024, 1024) });
-  {
-    const was = hideFromAO.map(o => o.visible), bg = scene.background;
-    hideFromAO.forEach(o => { o.visible = false; });           // glass and the view outside do not block light
-    scene.overrideMaterial = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+  const solid = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+  const volumetric = {
+    sunDepth: sunDepth.depthTexture,
+    sunMatrix: new THREE.Matrix4(),
+    sunDir,
+    color: new THREE.Color(),
+    density: 0.17,
+    boxMin: new THREE.Vector3(-W / 2, 0, -D / 2 - DEEP),       // the room, including the deep window reveals
+    boxMax: new THREE.Vector3(W / 2, H, D / 2),
+  };
+  function renderSunDepth() {
+    sunCam.position.copy(sun.position);
+    sunCam.lookAt(sun.target.position);
+    sunCam.updateMatrixWorld(true);
+    const hidden = [...hideFromAO, ...windCurtains], was = hidden.map(o => o.visible);
+    const bg = scene.background, auto = renderer.autoClear;
+    hidden.forEach(o => { o.visible = false; });               // glass and the view outside do not block light
+    scene.overrideMaterial = solid;
     scene.background = null;
     renderer.setRenderTarget(sunDepth);
     renderer.clear();
     renderer.render(scene, sunCam);
-    renderer.setRenderTarget(null);
     scene.overrideMaterial = null;
     scene.background = bg;
-    hideFromAO.forEach((o, i) => { o.visible = was[i]; });
+    hidden.forEach((o, i) => { o.visible = was[i]; });
+    renderer.autoClear = false;                                // then the blowing curtains, with their motion
+    for (const c of windCurtains) {
+      const own = c.material;
+      c.material = blownMask;
+      renderer.render(c, sunCam);
+      c.material = own;
+    }
+    renderer.autoClear = auto;
+    renderer.setRenderTarget(null);
+    volumetric.sunMatrix.multiplyMatrices(sunCam.projectionMatrix, sunCam.matrixWorldInverse);
   }
-  const volumetric = {
-    sunDepth: sunDepth.depthTexture,
-    sunMatrix: new THREE.Matrix4().multiplyMatrices(sunCam.projectionMatrix, sunCam.matrixWorldInverse),
-    sunDir,
-    color: new THREE.Color(1.0, 0.46, 0.17),
-    density: 0.22,
-    boxMin: new THREE.Vector3(-W / 2, 0, -D / 2 - DEEP),       // the room, including the deep window reveals
-    boxMax: new THREE.Vector3(W / 2, H, D / 2),
-  };
 
-  return { hideFromAO, volumetric };
+  // Put the sun where it is `minutes` after sunrise (negative = before) and set
+  // every light, the sky and the beams to match. Colours are linear RGB.
+  const { lerp, smoothstep: ramp, DEG2RAD } = THREE.MathUtils;
+  const blend = (out, a, b, t) => out.setRGB(lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t));
+  const landBase = new THREE.Color(0x2f3d20);
+  function setSun(minutes) {
+    const el = 0.183 * minutes, az = 1.5 + 0.17 * minutes;                     // degrees up, degrees south of east
+    sunDir.set(Math.sin(az * DEG2RAD) * Math.cos(el * DEG2RAD), Math.sin(el * DEG2RAD), -Math.cos(az * DEG2RAD) * Math.cos(el * DEG2RAD));
+    const risen = ramp(el, 0, 0.7);                                            // how much of the disc is over the ridge
+    const day = ramp(el, 0, 6), dawn = ramp(el, -0.3, 8);
+    const power = risen * lerp(3, 11, ramp(el, 0.3, 6));
+
+    blend(sun.color, [1, 0.10, 0.01], [1, 0.26, 0.05], day);                   // deep red, easing to orange
+    sun.intensity = power;
+    sun.position.copy(sunDir).multiplyScalar(8).add(sun.target.position);
+    sun.updateMatrix();
+    sun.updateMatrixWorld(true);
+    skyFill.intensity = lerp(0.03, 0.1, dawn);
+    for (const [light, full] of bounces) light.intensity = full * power / 11;
+    scene.environmentIntensity = lerp(0.06, 0.3, dawn);
+
+    blend(sky.uZenith.value, [0.004, 0.008, 0.03], [0.02, 0.04, 0.14], dawn);
+    blend(sky.uHorizon.value, [0.09, 0.03, 0.03], [0.5, 0.23, 0.11], dawn);
+    blend(sky.uGlow.value, [0.45, 0.07, 0.01], [1.2, 0.5, 0.18], dawn);
+    blend(sky.uLand.value, [0.05, 0.05, 0.07], [0.42, 0.36, 0.3], dawn);
+    blend(sky.uCloud.value, [0.1, 0.05, 0.06], [0.8, 0.5, 0.42], dawn);
+    sky.uDisc.value = 30;
+    ground.material.color.copy(landBase).multiply(sky.uLand.value);
+
+    blend(volumetric.color, [1, 0.2, 0.04], [1, 0.46, 0.17], day).multiplyScalar(power / 11);
+    return { exposure: lerp(1.4, 1.0, ramp(el, 0, 4)), progress: ramp(minutes, SUNRISE.start, 35) };
+  }
+  // seconds of breeze so far, and how hard it is blowing (0..1); returns the current swell for the sound of it
+  function setWind(seconds, strength) {
+    wind.uTime.value = seconds;
+    wind.uWind.value = strength;
+    return 0.55 + 0.45 * Math.sin(seconds * 0.6) * Math.sin(seconds * 0.23 + 1.3);
+  }
+
+  setSun(SUNRISE.start);
+  renderSunDepth();
+
+  return { hideFromAO, volumetric, setSun, setWind, renderSunDepth };  return { hideFromAO, volumetric };
 }

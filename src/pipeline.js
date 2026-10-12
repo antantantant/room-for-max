@@ -234,10 +234,10 @@ export function createPipeline(scene, camera) {
   // __bench(60) draws 60 frames back to back and returns the average cost of one, in ms
   window.__bench = (frames = 60) => {
     const gl = renderer.getContext(), t0 = performance.now();
-    for (let i = 0; i < frames; i++) { renderer.info.reset(); composer.render(); }
+    for (let i = 0; i < frames; i++) { renderer.info.reset(); renderer.shadowMap.needsUpdate = true; composer.render(); }
     gl.finish();
     return +((performance.now() - t0) / frames).toFixed(2);
   };
 
-  return { renderer, hideFromAO, invalidate, start, setVolumetric: cfg => { beams.configure(cfg); invalidate(); } };
+  return { renderer, hideFromAO, invalidate, start, setVolumetric: cfg => beams.configure(cfg) };
 }
